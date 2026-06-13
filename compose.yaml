@@ -1,0 +1,24 @@
+# Assistant IA local orchestré — stack Docker Compose
+# Architecture : docs/adr/0001-architecture-assistant-ia-local-orchestre.md
+#
+# Les services sont ajoutés couche par couche :
+#   Phase 1 — litellm (gateway modèles)
+#   Phase 2 — whisper (STT GPU)
+#   Phase 3 — n8n     (orchestrateur)
+#   Phase 5 — qdrant  (RAG)
+#
+# LM Studio tourne en natif (hors compose) ; les conteneurs l'atteignent
+# via host.docker.internal (extra_hosts host-gateway).
+---
+name: ai-assistant
+
+networks:
+  ai-assistant-net:
+    name: ai-assistant-net
+    driver: bridge
+
+# Volumes nommés (déclarés au fur et à mesure des services)
+volumes: {}
+
+# Aucun service en Phase 0 (socle uniquement).
+services: {}

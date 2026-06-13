@@ -116,10 +116,10 @@ repos:
         files: \.(yml|yaml)$
         # Exclut les YAML qui ne sont pas des playbooks Ansible :
         # - cloud-init*.yaml (cloud-init, pas Ansible)
-        # - docker-compose*.yml
+        # - docker-compose*.yml et compose.yaml (Docker, pas Ansible)
         # - .pre-commit-config.yaml, .yamllint, .markdownlint.json
         # - dossiers GitHub/examples/docs/k8s
-        exclude: ^(\.github|examples|docs|k8s|kubernetes)/|cloud-init.*\.(yml|yaml)$|docker-compose.*\.(yml|yaml)$|^\.pre-commit-config\.yaml$|^\.yamllint$
+        exclude: ^(\.github|examples|docs|k8s|kubernetes)/|cloud-init.*\.(yml|yaml)$|docker-compose.*\.(yml|yaml)$|(^|/)compose\.ya?ml$|^\.pre-commit-config\.yaml$|^\.yamllint$
         pass_filenames: true
 
   # ---------- Python ----------
