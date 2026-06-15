@@ -3,7 +3,7 @@
 #
 # Les services sont ajoutés couche par couche :
 #   Phase 1 — litellm (gateway modèles LOCAUX)   [actif]
-#   Phase 2 — whisper (STT GPU)
+#   Phase 2 — whisper (STT GPU, speaches)        [actif]
 #   Phase 3 — n8n     (orchestrateur)
 #   Phase 5 — qdrant  (RAG)
 #
@@ -19,6 +19,7 @@ networks:
 
 volumes:
   litellm-db: # persistance Postgres (clés virtuelles, budgets, logs)
+  whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
 
 services:
   # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)
@@ -60,3 +61,29 @@ services:
     command:
       - "--config=/app/config.yaml"
       - "--port=4000"
+
+  # Phase 2 — STT GPU (speaches, OpenAI-compatible /v1/audio/transcriptions)
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
+    container_name: whisper
+    restart: unless-stopped
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:8000:8000" # exposé en local uniquement
+    environment:
+      WHISPER__MODEL: Systran/faster-whisper-medium
+      WHISPER__INFERENCE_DEVICE: cuda
+      WHISPER__COMPUTE_TYPE: float16
+      ENABLE_UI: "false" # backend STT : pas d'UI gradio
+      DO_NOT_TRACK: "1" # coupe la télémétrie gradio
+      HF_HUB_DISABLE_TELEMETRY: "1" # coupe la télémétrie HuggingFace
+    volumes:
+      - whisper-cache:/home/ubuntu/.cache # cache HuggingFace (modèles)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
