@@ -17,33 +17,18 @@
     },
     {
       "parameters": {
-        "method": "POST",
-        "url": "http://litellm:4000/v1/chat/completions",
-        "sendHeaders": true,
-        "headerParameters": {
-          "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer CHANGEME_LITELLM_MASTER_KEY"
-            },
-            { "name": "Content-Type", "value": "application/json" }
-          ]
-        },
-        "sendBody": true,
-        "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: \"local-gemma\", messages: [{ role: \"user\", content: $json.body.text }], max_tokens: 2048 }) }}",
-        "options": { "timeout": 120000 }
+        "jsCode": "// Routage : '/claude ...' -> bridge Claude opus (forfait) ; sinon -> local-gemma.\n// Remplace les 2 placeholders par les vraies clés (LITELLM_MASTER_KEY et BRIDGE_TOKEN du .env).\nconst LITELLM_KEY = 'CHANGEME_LITELLM_MASTER_KEY';\nconst BRIDGE_TOKEN = 'CHANGEME_BRIDGE_TOKEN';\n\nconst text = ($json.body?.text || '').trim();\nconst isClaude = /^\\/claude\\b/i.test(text);\nlet reply;\n\nif (isClaude) {\n  const prompt = text.replace(/^\\/claude\\s*/i, '');\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'http://host.docker.internal:8088/run',\n    headers: { Authorization: 'Bearer ' + BRIDGE_TOKEN, 'Content-Type': 'application/json' },\n    body: { prompt },\n    json: true,\n    timeout: 120000,\n  });\n  reply = res.result;\n} else {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'http://litellm:4000/v1/chat/completions',\n    headers: { Authorization: 'Bearer ' + LITELLM_KEY, 'Content-Type': 'application/json' },\n    body: { model: 'local-gemma', messages: [{ role: 'user', content: text }], max_tokens: 2048 },\n    json: true,\n    timeout: 120000,\n  });\n  reply = res.choices[0].message.content;\n}\n\nreturn [{ json: { reply } }];"
       },
       "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
-      "name": "LiteLLM local-gemma",
-      "type": "n8n-nodes-base.httpRequest",
-      "typeVersion": 4.2,
+      "name": "Routage LLM (local / claude)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
       "position": [480, 300]
     },
     {
       "parameters": {
         "respondWith": "json",
-        "responseBody": "={{ JSON.stringify({ reply: $json.choices[0].message.content }) }}",
+        "responseBody": "={{ JSON.stringify({ reply: $json.reply }) }}",
         "options": {}
       },
       "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
@@ -55,9 +40,11 @@
   ],
   "connections": {
     "Webhook telegram-in": {
-      "main": [[{ "node": "LiteLLM local-gemma", "type": "main", "index": 0 }]]
+      "main": [
+        [{ "node": "Routage LLM (local / claude)", "type": "main", "index": 0 }]
+      ]
     },
-    "LiteLLM local-gemma": {
+    "Routage LLM (local / claude)": {
       "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
     }
   },
