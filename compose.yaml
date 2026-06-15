@@ -4,7 +4,7 @@
 # Les services sont ajoutés couche par couche :
 #   Phase 1 — litellm (gateway modèles LOCAUX)   [actif]
 #   Phase 2 — whisper (STT GPU, speaches)        [actif]
-#   Phase 3 — n8n     (orchestrateur)
+#   Phase 3 — n8n     (orchestrateur)            [actif]
 #   Phase 5 — qdrant  (RAG)
 #
 # LM Studio tourne en natif (hors compose) ; les conteneurs l'atteignent
@@ -18,8 +18,9 @@ networks:
     driver: bridge
 
 volumes:
-  litellm-db: # persistance Postgres (clés virtuelles, budgets, logs)
+  litellm-db: # persistance Postgres (LiteLLM + base n8n)
   whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
+  n8n-data: # données n8n (/home/node/.n8n : config, clés, binaires)
 
 services:
   # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)
@@ -33,8 +34,11 @@ services:
       POSTGRES_USER: litellm
       POSTGRES_DB: litellm
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis dans .env}
+      # Utilisé par le script initdb pour créer la base n8n (déploiement neuf)
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?N8N_DB_PASSWORD requis dans .env}
     volumes:
       - litellm-db:/var/lib/postgresql/data
+      - ./services/litellm/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
       interval: 10s
@@ -87,3 +91,38 @@ services:
             - driver: nvidia
               count: all
               capabilities: [gpu]
+
+  # Phase 3 — orchestrateur (workflows : whisper + LiteLLM ; Claude via claude -p plus tard)
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:5678:5678" # exposé en local uniquement
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # pour le futur bridge claude -p (hôte)
+    environment:
+      # Persistance : réutilise l'instance Postgres litellm-db (base + rôle n8n)
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: litellm-db
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:?N8N_DB_PASSWORD requis dans .env}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY requis dans .env}
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Europe/Paris
+      TZ: Europe/Paris
+      N8N_DIAGNOSTICS_ENABLED: "false" # télémétrie off (local-first)
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true" # task runners (recommandé n8n)
+    volumes:
+      - n8n-data:/home/node/.n8n
