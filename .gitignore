@@ -104,6 +104,10 @@ composer.phar
 # ===== Docker =====
 .docker/
 
+# ===== Base de connaissances RAG (documents perso, non versionnés) =====
+/knowledge/*
+!/knowledge/README.md
+
 # ===== Misc build outputs =====
 target/
 bin/

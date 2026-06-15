@@ -1,0 +1,13 @@
+{
+  "mcpServers": {
+    "qdrant": {
+      "command": "uvx",
+      "args": ["mcp-server-qdrant"],
+      "env": {
+        "QDRANT_URL": "http://127.0.0.1:6333",
+        "COLLECTION_NAME": "knowledge",
+        "EMBEDDING_MODEL": "nomic-ai/nomic-embed-text-v1.5"
+      }
+    }
+  }
+}
