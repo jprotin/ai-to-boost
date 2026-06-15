@@ -6,7 +6,7 @@
 #   Phase 2 — whisper (STT GPU, speaches)        [actif]
 #   Phase 3 — n8n     (orchestrateur)            [actif]
 #   Phase 4 — telegram-poller (entrée/sortie)    [actif]
-#   Phase 5 — qdrant  (RAG)
+#   Phase 5 — qdrant  (RAG)                      [actif]
 #
 # LM Studio tourne en natif (hors compose) ; les conteneurs l'atteignent
 # via host.docker.internal (extra_hosts host-gateway).
@@ -22,6 +22,7 @@ volumes:
   litellm-db: # persistance Postgres (LiteLLM + base n8n)
   whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
   n8n-data: # données n8n (/home/node/.n8n : config, clés, binaires)
+  qdrant-data: # base vectorielle Qdrant (RAG)
 
 services:
   # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)
@@ -146,3 +147,18 @@ services:
     volumes:
       - ./services/telegram-poller/poller.py:/app/poller.py:ro
     command: ["python", "/app/poller.py"]
+
+  # Phase 5 — base vectorielle (RAG). Local-only, sans clé API en v1 (cf. runbook).
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:6333:6333" # REST/UI, exposé en local uniquement
+      - "127.0.0.1:6334:6334" # gRPC
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - qdrant-data:/qdrant/storage
