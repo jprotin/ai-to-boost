@@ -1,0 +1,66 @@
+{
+  "name": "Phase 4 — assistant Telegram (cerveau)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-in",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "name": "Webhook telegram-in",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "telegram-in"
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Authorization",
+              "value": "Bearer CHANGEME_LITELLM_MASTER_KEY"
+            },
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: \"local-gemma\", messages: [{ role: \"user\", content: $json.body.text }], max_tokens: 500 }) }}",
+        "options": { "timeout": 120000 }
+      },
+      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "LiteLLM local-gemma",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply: $json.choices[0].message.content }) }}",
+        "options": {}
+      },
+      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Répondre au webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 300]
+    }
+  ],
+  "connections": {
+    "Webhook telegram-in": {
+      "main": [[{ "node": "LiteLLM local-gemma", "type": "main", "index": 0 }]]
+    },
+    "LiteLLM local-gemma": {
+      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
