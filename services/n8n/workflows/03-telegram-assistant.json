@@ -31,7 +31,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ model: \"local-gemma\", messages: [{ role: \"user\", content: $json.body.text }], max_tokens: 500 }) }}",
+        "jsonBody": "={{ JSON.stringify({ model: \"local-gemma\", messages: [{ role: \"user\", content: $json.body.text }], max_tokens: 2048 }) }}",
         "options": { "timeout": 120000 }
       },
       "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
