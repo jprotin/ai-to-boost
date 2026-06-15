@@ -5,6 +5,7 @@
 #   Phase 1 — litellm (gateway modèles LOCAUX)   [actif]
 #   Phase 2 — whisper (STT GPU, speaches)        [actif]
 #   Phase 3 — n8n     (orchestrateur)            [actif]
+#   Phase 4 — telegram-poller (entrée/sortie)    [actif]
 #   Phase 5 — qdrant  (RAG)
 #
 # LM Studio tourne en natif (hors compose) ; les conteneurs l'atteignent
@@ -126,3 +127,22 @@ services:
       N8N_RUNNERS_ENABLED: "true" # task runners (recommandé n8n)
     volumes:
       - n8n-data:/home/node/.n8n
+
+  # Phase 4 — adaptateur Telegram (polling local : voix->whisper, cerveau n8n)
+  telegram-poller:
+    image: python:3.12-slim
+    container_name: telegram-poller
+    restart: unless-stopped
+    depends_on:
+      - n8n
+      - whisper
+    networks:
+      - ai-assistant-net
+    env_file: .env # TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_CHAT_IDS
+    environment:
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/telegram-in
+      WHISPER_URL: http://whisper:8000
+      WHISPER_MODEL: Systran/faster-whisper-medium
+    volumes:
+      - ./services/telegram-poller/poller.py:/app/poller.py:ro
+    command: ["python", "/app/poller.py"]
