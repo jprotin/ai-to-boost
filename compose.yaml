@@ -141,7 +141,7 @@ services:
       - ai-assistant-net
     env_file: .env # TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_CHAT_IDS
     environment:
-      N8N_WEBHOOK_URL: http://n8n:5678/webhook/telegram-in
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/assistant-in # Phase 6a : dispatcher unique
       WHISPER_URL: http://whisper:8000
       WHISPER_MODEL: Systran/faster-whisper-medium
     volumes:

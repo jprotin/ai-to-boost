@@ -1,4 +1,5 @@
 {
+  "id": "CYUdpCPY9aGthprl",
   "name": "Phase 3 — démo whisper + LiteLLM",
   "nodes": [
     {
@@ -24,26 +25,30 @@
       "parameters": {
         "method": "POST",
         "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            {
-              "name": "Authorization",
-              "value": "Bearer CHANGEME_LITELLM_MASTER_KEY"
-            },
             { "name": "Content-Type", "value": "application/json" }
           ]
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "{\n  \"model\": \"local-gemma\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Dis bonjour en une phrase.\"}],\n  \"max_tokens\": 50\n}",
+        "jsonBody": "{\n  \"model\": \"local-gemma\",\n  \"messages\": [{\"role\": \"user\", \"content\": \"Dis bonjour en une phrase.\"}],\n  \"max_tokens\": 2048\n}",
         "options": {}
       },
       "id": "33333333-3333-3333-3333-333333333333",
       "name": "LiteLLM local-gemma",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [480, 400]
+      "position": [480, 400],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "litellmmasterkey1",
+          "name": "LiteLLM master key"
+        }
+      }
     }
   ],
   "connections": {
