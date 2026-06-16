@@ -49,6 +49,8 @@ CLAUDE = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
 DEFAULT_REPO = os.environ.get("AGENT_DEFAULT_REPO", "")
 # Callback n8n appelé en fin de job (async) : n8n notifie ensuite l'origine.
 CALLBACK_URL = os.environ.get("AGENT_CALLBACK_URL", "")
+# Exiger le marqueur .ai-to-boost/ (projet "initialisé") avant d'agir (Phase 6b.3b).
+REQUIRE_MARKER = os.environ.get("AGENT_REQUIRE_MARKER", "true").lower() != "false"
 
 # Repos interdits comme cible (le worker ne doit jamais agir sur l'orchestrateur).
 _DEFAULT_FORBID = os.path.realpath(
@@ -121,7 +123,25 @@ def _validate_repo(repo):
             or forbid.startswith(repo + os.sep)
         ):
             raise ValueError(f"repo cible interdit (orchestrateur): {repo}")
+    if REQUIRE_MARKER and not os.path.isdir(os.path.join(repo, ".ai-to-boost")):
+        raise ValueError(
+            f"projet non initialisé (marqueur .ai-to-boost/ absent): {repo} "
+            "— lancer scripts/ai-to-boost-init.sh"
+        )
     return repo
+
+
+def _base_branch(repo):
+    """Base depuis laquelle brancher : config .ai-to-boost, sinon HEAD courant."""
+    cfg = os.path.join(repo, ".ai-to-boost", "config.json")
+    try:
+        with open(cfg, encoding="utf-8") as f:
+            base = (json.load(f) or {}).get("base_branch")
+        if base:
+            return base
+    except Exception:
+        pass
+    return _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
 
 
 def _guard_settings():
@@ -147,8 +167,8 @@ def run_job(job_id, prompt, repo, mode="file"):
     with RUN_LOCK:
         _set(job_id, status="running")
         try:
-            base = _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
-            _git(repo, "worktree", "add", worktree, "-b", branch)
+            base = _base_branch(repo)
+            _git(repo, "worktree", "add", worktree, "-b", branch, base)
         except Exception as exc:
             _set(job_id, status="error", error=f"préparation worktree: {exc}")
             return
