@@ -60,9 +60,15 @@ FORBID = [
     if p
 ]
 
-# 6b.1 : outils fichiers seulement.
-ALLOWED_TOOLS = ["Read", "Edit", "Write"]
-DISALLOWED_TOOLS = ["Bash", "WebFetch", "WebSearch", "NotebookEdit"]
+# Hook garde-fou PreToolUse (denylist Bash + confinement écritures), injecté via --settings.
+GUARD_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard_hook.py")
+
+# Modes : "file" (défaut, outils fichiers) / "build" (Bash en plus, sous garde-fou).
+ALLOWED_TOOLS = {
+    "file": ["Read", "Edit", "Write"],
+    "build": ["Read", "Edit", "Write", "Bash"],
+}
+DISALLOWED_TOOLS = ["WebFetch", "WebSearch"]
 APPEND_SYSTEM_PROMPT = (
     "Tu es un worker de développement automatisé, sans interaction humaine pendant "
     "l'exécution. Réalise la demande en créant/éditant les fichiers nécessaires dans "
@@ -118,9 +124,26 @@ def _validate_repo(repo):
     return repo
 
 
-def run_job(job_id, prompt, repo):
+def _guard_settings():
+    """Settings inline (prime sur le worktree) : hook PreToolUse sur Bash + écritures."""
+    return json.dumps(
+        {
+            "hooks": {
+                "PreToolUse": [
+                    {
+                        "matcher": "Bash|Edit|Write|MultiEdit|NotebookEdit",
+                        "hooks": [{"type": "command", "command": GUARD_HOOK}],
+                    }
+                ]
+            }
+        }
+    )
+
+
+def run_job(job_id, prompt, repo, mode="file"):
     branch = f"agent/{job_id}"
     worktree = os.path.join(WORKROOT, job_id)
+    audit_log = os.path.join(WORKROOT, f"{job_id}.audit.log")
     with RUN_LOCK:
         _set(job_id, status="running")
         try:
@@ -136,6 +159,10 @@ def run_job(job_id, prompt, repo):
                 if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
             }
             env.setdefault("PATH", "/home/jprotin/.local/bin:/usr/bin:/bin")
+            env["AGENT_AUDIT_LOG"] = audit_log
+            # build : Bash autorisé mais bypassPermissions + garde-fou hook (bloque même
+            #         en bypass) ; file : édition auto, pas de Bash.
+            perm_mode = "bypassPermissions" if mode == "build" else "acceptEdits"
             cmd = [
                 CLAUDE,
                 "-p",
@@ -145,13 +172,15 @@ def run_job(job_id, prompt, repo):
                 "--output-format",
                 "json",
                 "--permission-mode",
-                "acceptEdits",
+                perm_mode,
                 "--max-turns",
                 str(MAXTURNS),
                 "--allowed-tools",
-                *ALLOWED_TOOLS,
+                *ALLOWED_TOOLS.get(mode, ALLOWED_TOOLS["file"]),
                 "--disallowed-tools",
                 *DISALLOWED_TOOLS,
+                "--settings",
+                _guard_settings(),
                 "--append-system-prompt",
                 APPEND_SYSTEM_PROMPT,
             ]
@@ -181,6 +210,10 @@ def run_job(job_id, prompt, repo):
                 )
             diff_stat = _git(repo, "diff", "--stat", f"{base}..{branch}")
             files = _git(repo, "diff", "--name-status", f"{base}..{branch}")
+            audit = []
+            if os.path.exists(audit_log):
+                with open(audit_log, encoding="utf-8") as f:
+                    audit = [line.rstrip("\n") for line in f if line.strip()]
             _set(
                 job_id,
                 status="done",
@@ -190,6 +223,7 @@ def run_job(job_id, prompt, repo):
                 summary=summary,
                 diff_stat=diff_stat,
                 files=files,
+                audit=audit,
                 cost_usd=result.get("total_cost_usd"),
             )
         except subprocess.TimeoutExpired:
@@ -260,16 +294,18 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send(400, {"error": str(exc)})
             return
+        mode = data.get("mode") if data.get("mode") in ("file", "build") else "file"
         job_id = uuid.uuid4().hex[:12]
         with JOBS_LOCK:
             JOBS[job_id] = {
                 "job_id": job_id,
                 "status": "accepted",
                 "repo": repo,
+                "mode": mode,
                 "return_target": data.get("return_target"),
             }
         threading.Thread(
-            target=run_job, args=(job_id, prompt, repo), daemon=True
+            target=run_job, args=(job_id, prompt, repo, mode), daemon=True
         ).start()
         self._send(202, {"job_id": job_id, "status": "accepted"})
 
