@@ -147,7 +147,28 @@ projet non initialisé`), togglable par `AGENT_REQUIRE_MARKER` (défaut `true`).
 Validation (2026-06-16) : repo sans marqueur → `400` ; sandbox initialisé → job branché
 depuis `master` (base stable). 1er projet enregistré : `~/agent-workspace/sandbox`.
 
+## Palier 6b.3c (FAIT) — BMAD commun, injecté par job
+
+BMAD est **installé une seule fois** (commun à tous les projets), pas par projet.
+
+- **Install partagée** (`AGENT_BMAD_DIR`, défaut `~/agent-workspace/.bmad-shared`) :
+
+  ```bash
+  npx bmad-method@latest install --yes --directory <dir> --modules bmm --tools claude-code
+  ```
+
+  → produit `_bmad/` (config + modules) + `.claude/skills/` (44 skills `bmad-*`).
+  Auto-contenu : **aucune écriture** dans `~/.claude` perso ni `$HOME`.
+
+- **Injection par job** : le worker symlink `_bmad` et `.claude/skills` (du partagé) dans
+  le worktree avant de lancer claude → l'agent voit les skills `bmad-*` ; puis **éjecte**
+  les symlinks avant `git add` → **aucune pollution du diff**.
+- Avantages : source unique (MAJ en un endroit), pas de réseau/install par projet, pas de
+  pollution `.claude/` perso ni des repos cibles.
+
+Validation (2026-06-16) : `/build` invoquant l'agent architecte BMAD a produit un
+`architecture.md` (persona « Winston ») ; diff = `architecture.md` seul (symlinks éjectés).
+
 ## Suite
 
-- **6b.3c** : installation BMAD dans l'init (après vérif méthode non-interactive).
 - **6b.3d** : RAG double-portée (commun `knowledge` + `.ai-to-boost/rag/` par projet).

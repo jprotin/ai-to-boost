@@ -64,6 +64,10 @@ FORBID = [
 
 # Hook garde-fou PreToolUse (denylist Bash + confinement écritures), injecté via --settings.
 GUARD_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard_hook.py")
+# BMAD commun : installé une fois, injecté (symlink) dans chaque worktree (Phase 6b.3c).
+BMAD_SHARED = os.environ.get(
+    "AGENT_BMAD_DIR", os.path.expanduser("~/agent-workspace/.bmad-shared")
+)
 
 # Modes : "file" (défaut, outils fichiers) / "build" (Bash en plus, sous garde-fou).
 ALLOWED_TOOLS = {
@@ -92,6 +96,41 @@ def _git(repo, *args, check=True):
 def _set(job_id, **kw):
     with JOBS_LOCK:
         JOBS[job_id].update(kw)
+
+
+def _inject_bmad(worktree):
+    """Rend BMAD (commun) visible dans le worktree via symlinks (sans le committer)."""
+    if not os.path.isdir(BMAD_SHARED):
+        return False
+    try:
+        os.symlink(os.path.join(BMAD_SHARED, "_bmad"), os.path.join(worktree, "_bmad"))
+        os.makedirs(os.path.join(worktree, ".claude"), exist_ok=True)
+        os.symlink(
+            os.path.join(BMAD_SHARED, ".claude", "skills"),
+            os.path.join(worktree, ".claude", "skills"),
+        )
+        return True
+    except Exception as exc:
+        print(f"[bmad] injection échouée: {exc}", flush=True)
+        return False
+
+
+def _eject_bmad(worktree):
+    """Retire les symlinks BMAD avant le `git add` (ne pas committer l'injection)."""
+    for rel in ("_bmad", ".claude/skills"):
+        p = os.path.join(worktree, rel)
+        try:
+            if os.path.islink(p):
+                os.unlink(p)
+        except Exception:
+            pass
+    # supprime .claude si vide
+    cdir = os.path.join(worktree, ".claude")
+    try:
+        if os.path.isdir(cdir) and not os.listdir(cdir):
+            os.rmdir(cdir)
+    except Exception:
+        pass
 
 
 def _callback(job_id):
@@ -172,6 +211,7 @@ def run_job(job_id, prompt, repo, mode="file"):
         except Exception as exc:
             _set(job_id, status="error", error=f"préparation worktree: {exc}")
             return
+        bmad = _inject_bmad(worktree)
         try:
             env = {
                 k: v
@@ -219,6 +259,7 @@ def run_job(job_id, prompt, repo, mode="file"):
             result = json.loads(proc.stdout or "{}")
             summary = result.get("result", "")
 
+            _eject_bmad(worktree)  # retire les symlinks BMAD avant de committer
             _git(worktree, "add", "-A")
             changed = bool(_git(worktree, "status", "--porcelain"))
             if changed:
@@ -240,6 +281,7 @@ def run_job(job_id, prompt, repo, mode="file"):
                 branch=branch,
                 base=base,
                 changed=changed,
+                bmad=bmad,
                 summary=summary,
                 diff_stat=diff_stat,
                 files=files,
