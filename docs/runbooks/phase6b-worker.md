@@ -101,6 +101,38 @@ curl -s -X POST http://localhost:5678/webhook/assistant-in -H 'Content-Type: app
 
 Test réel : envoyer `/code …` au bot Telegram → ack puis résultat.
 
+## Palier 6b.3a (FAIT) — Bash sous garde-fou + audit
+
+Deux modes de job (champ `mode`) :
+
+| Mode            | Route dispatcher | Outils                      | Permission                      |
+| --------------- | ---------------- | --------------------------- | ------------------------------- |
+| `file` (défaut) | `/code`          | Read, Edit, Write           | `acceptEdits`                   |
+| `build`         | `/build`         | Read, Edit, Write, **Bash** | `bypassPermissions` + garde-fou |
+
+**Garde-fou** `services/claude-agent/guard_hook.py` (hook `PreToolUse`, injecté via
+`--settings` inline → **prime sur tout `.claude/settings.json` du worktree**, et
+**bloque même en `bypassPermissions`** — confirmé doc Claude Code) :
+
+- **Bash** : BLOQUE (exit 2) `git push|remote|reset --hard|rebase|--force`, `.git/config|hooks`,
+  `rm -rf|sudo|mkfs|dd|chmod 777|chown`, `curl|wget … | sh`, fork bomb, `systemctl|crontab`,
+  `ssh|scp`. Le reste (npm, node, git add/commit/diff…) passe.
+- **Edit/Write/MultiEdit** : BLOQUE toute écriture **hors du worktree** et dans `.git/config|hooks`.
+- **Audit** : toute commande Bash est journalisée (`AGENT_AUDIT_LOG`) et renvoyée dans
+  `GET /jobs/<id>` → champ `audit` (revue a posteriori de ce qu'a fait l'agent).
+
+`WebFetch`/`WebSearch` restent coupés (`--disallowed-tools`). Confinement inchangé
+(worktree, aucun remote, jamais de push/merge, max-turns, timeout).
+
+Validation (2026-06-16) : `/build` exécute `node`/shell légitime (audit l'atteste) ;
+une tentative `git push` est **bloquée** par le hook ; `/code` reste fichiers-seuls.
+
+> Limite assumée : garde-fous contre l'**erreur accidentelle**, pas un agent adversarial ;
+> le confinement (worktree + sans remote + non mergé) borne les dégâts.
+> À affiner en 6b.3b : brancher depuis une **base stable** (main) définie par l'init, pas
+> depuis le HEAD courant du repo cible.
+
 ## Suite
 
-- **6b.3** : Bash scopé + hook `PreToolUse` (anti push/rm/sudo) + installation BMAD.
+- **6b.3b** : init projet (`ai-to-boost-init.sh` → marqueur `.ai-to-boost/` requis par le
+  worker) + installation BMAD + RAG double-portée (commun + par projet).

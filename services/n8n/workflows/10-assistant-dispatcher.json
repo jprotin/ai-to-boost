@@ -18,7 +18,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normalise toutes les entrées vers {command, payload, return_target, source}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet payload = text;\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  if (c === 'chat' || c === 'claude' || c === 'code' || c === 'build') {\n    command = (c === 'build') ? 'code' : c;\n    payload = m[2].trim();\n  }\n}\nreturn [{ json: { command, payload, return_target, source } }];"
+        "jsCode": "// Normalise toutes les entrées vers {command, payload, return_target, source, mode}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet mode = 'file';\nlet payload = text;\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  if (c === 'chat' || c === 'claude' || c === 'code' || c === 'build') {\n    command = (c === 'chat' || c === 'claude') ? c : 'code';\n    mode = (c === 'build') ? 'build' : 'file';\n    payload = m[2].trim();\n  }\n}\nreturn [{ json: { command, payload, return_target, source, mode } }];"
       },
       "id": "a0000000-0000-0000-0000-000000000002",
       "name": "Normalisation",
@@ -138,7 +138,7 @@
         },
         "sendBody": true,
         "specifyBody": "json",
-        "jsonBody": "={{ JSON.stringify({ prompt: $json.payload, return_target: $json.return_target }) }}",
+        "jsonBody": "={{ JSON.stringify({ prompt: $json.payload, return_target: $json.return_target, mode: $json.mode }) }}",
         "options": {}
       },
       "id": "a0000000-0000-0000-0000-000000000006",
