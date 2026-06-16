@@ -18,7 +18,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normalise toutes les entrées vers {command, payload, return_target, source}.\n// Tolère le {chat_id, text} du poller Telegram et un {source, return_target, text} générique.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet payload = text;\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  if (c === 'chat' || c === 'claude' || c === 'code' || c === 'build') {\n    command = (c === 'build') ? 'code' : c;\n    payload = m[2].trim();\n  }\n}\nreturn [{ json: { command, payload, return_target, source } }];"
+        "jsCode": "// Normalise toutes les entrées vers {command, payload, return_target, source}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet payload = text;\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  if (c === 'chat' || c === 'claude' || c === 'code' || c === 'build') {\n    command = (c === 'build') ? 'code' : c;\n    payload = m[2].trim();\n  }\n}\nreturn [{ json: { command, payload, return_target, source } }];"
       },
       "id": "a0000000-0000-0000-0000-000000000002",
       "name": "Normalisation",
@@ -99,7 +99,7 @@
       "name": "Bridge claude -p",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
-      "position": [900, 180],
+      "position": [900, 160],
       "credentials": {
         "httpHeaderAuth": { "id": "bridgetoken00001", "name": "Bridge token" }
       }
@@ -122,7 +122,33 @@
       "name": "Reply claude",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [1120, 180]
+      "position": [1120, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8089/jobs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prompt: $json.payload, return_target: $json.return_target }) }}",
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000006",
+      "name": "Lancer job (worker)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 320],
+      "credentials": {
+        "httpHeaderAuth": { "id": "agenttoken000001", "name": "Agent token" }
+      }
     },
     {
       "parameters": {
@@ -131,18 +157,18 @@
             {
               "id": "r2",
               "name": "reply",
-              "value": "🛠️ /code reçu — le worker agentique sera branché en Phase 6b.",
+              "value": "=🛠️ Tâche {{ $json.job_id }} acceptée — je te préviens quand c'est prêt.",
               "type": "string"
             }
           ]
         },
         "options": {}
       },
-      "id": "a0000000-0000-0000-0000-000000000006",
-      "name": "Ack /code",
+      "id": "a0000000-0000-0000-0000-000000000007",
+      "name": "Reply code",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
-      "position": [900, 340]
+      "position": [1120, 320]
     },
     {
       "parameters": {
@@ -161,7 +187,7 @@
         "jsonBody": "={{ JSON.stringify({ model: 'local-gemma', messages: [{ role: 'user', content: $json.payload }], max_tokens: 2048 }) }}",
         "options": {}
       },
-      "id": "a0000000-0000-0000-0000-000000000007",
+      "id": "a0000000-0000-0000-0000-000000000008",
       "name": "LiteLLM local-gemma",
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.2,
@@ -187,7 +213,7 @@
         },
         "options": {}
       },
-      "id": "a0000000-0000-0000-0000-000000000008",
+      "id": "a0000000-0000-0000-0000-000000000009",
       "name": "Reply chat",
       "type": "n8n-nodes-base.set",
       "typeVersion": 3.4,
@@ -199,7 +225,7 @@
         "responseBody": "={{ JSON.stringify({ reply: $json.reply }) }}",
         "options": {}
       },
-      "id": "a0000000-0000-0000-0000-000000000009",
+      "id": "a0000000-0000-0000-0000-000000000010",
       "name": "Répondre au webhook",
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
@@ -216,7 +242,7 @@
     "Switch commande": {
       "main": [
         [{ "node": "Bridge claude -p", "type": "main", "index": 0 }],
-        [{ "node": "Ack /code", "type": "main", "index": 0 }],
+        [{ "node": "Lancer job (worker)", "type": "main", "index": 0 }],
         [{ "node": "LiteLLM local-gemma", "type": "main", "index": 0 }]
       ]
     },
@@ -226,7 +252,10 @@
     "Reply claude": {
       "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
     },
-    "Ack /code": {
+    "Lancer job (worker)": {
+      "main": [[{ "node": "Reply code", "type": "main", "index": 0 }]]
+    },
+    "Reply code": {
       "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
     },
     "LiteLLM local-gemma": {

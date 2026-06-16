@@ -19,9 +19,11 @@ Variables d'environnement (cf. .env) :
 import json
 import os
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
 TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
 ALLOWED = {
@@ -35,6 +37,10 @@ N8N_WEBHOOK_URL = os.environ.get(
 WHISPER_URL = os.environ.get("WHISPER_URL", "http://whisper:8000").rstrip("/")
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "Systran/faster-whisper-medium")
 POLL_TIMEOUT = int(os.environ.get("POLL_TIMEOUT", "30"))
+# Endpoint /notify (Phase 6b.2) : n8n pousse un message async ; le token Telegram
+# reste confiné ici (ADR 0003). Port interne au réseau Docker, non exposé à l'hôte.
+NOTIFY_PORT = int(os.environ.get("NOTIFY_PORT", "8090"))
+NOTIFY_TOKEN = os.environ.get("NOTIFY_TOKEN", "")
 API = f"https://api.telegram.org/bot{TOKEN}"
 FILE_API = f"https://api.telegram.org/file/bot{TOKEN}"
 
@@ -123,9 +129,55 @@ def handle(update: dict) -> None:
     send_message(chat_id, reply)
 
 
+class NotifyHandler(BaseHTTPRequestHandler):
+    def log_message(self, *args):
+        pass
+
+    def do_POST(self):
+        if self.path != "/notify":
+            self.send_response(404)
+            self.end_headers()
+            return
+        if (
+            NOTIFY_TOKEN
+            and self.headers.get("Authorization") != f"Bearer {NOTIFY_TOKEN}"
+        ):
+            self.send_response(401)
+            self.end_headers()
+            return
+        try:
+            length = int(self.headers.get("Content-Length", "0"))
+            data = json.loads(self.rfile.read(length) or b"{}")
+            chat_id = data["chat_id"]
+            text = data.get("text", "")
+        except Exception:
+            self.send_response(400)
+            self.end_headers()
+            return
+        # l'allowlist s'applique aussi aux notifications sortantes
+        if str(chat_id) not in ALLOWED:
+            self.send_response(403)
+            self.end_headers()
+            return
+        try:
+            send_message(chat_id, text)
+            self.send_response(200)
+        except Exception as exc:
+            print(f"[notify] échec sendMessage: {exc}", flush=True)
+            self.send_response(502)
+        self.end_headers()
+
+
+def start_notify_server() -> None:
+    server = ThreadingHTTPServer(("0.0.0.0", NOTIFY_PORT), NotifyHandler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    print(f"telegram-poller /notify sur :{NOTIFY_PORT}", flush=True)
+
+
 def main() -> None:
     if not TOKEN or not ALLOWED:
         sys.exit("TELEGRAM_BOT_TOKEN et TELEGRAM_ALLOWED_CHAT_IDS requis (cf. .env)")
+    start_notify_server()
     print(f"telegram-poller démarré (allowlist: {sorted(ALLOWED)})", flush=True)
     offset = 0
     while True:
