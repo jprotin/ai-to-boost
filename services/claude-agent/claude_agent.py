@@ -28,6 +28,7 @@ Config (env, cf. .env) :
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import threading
@@ -68,6 +69,10 @@ GUARD_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard_hoo
 BMAD_SHARED = os.environ.get(
     "AGENT_BMAD_DIR", os.path.expanduser("~/agent-workspace/.bmad-shared")
 )
+# RAG double-portée : collection commune + collection projet (Phase 6b.3d).
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
+RAG_COMMON = os.environ.get("RAG_COLLECTION", "knowledge")
+EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 
 # Modes : "file" (défaut, outils fichiers) / "build" (Bash en plus, sous garde-fou).
 ALLOWED_TOOLS = {
@@ -78,7 +83,10 @@ DISALLOWED_TOOLS = ["WebFetch", "WebSearch"]
 APPEND_SYSTEM_PROMPT = (
     "Tu es un worker de développement automatisé, sans interaction humaine pendant "
     "l'exécution. Réalise la demande en créant/éditant les fichiers nécessaires dans "
-    "le répertoire courant. Ne pose aucune question, ne demande aucune confirmation."
+    "le répertoire courant. Ne pose aucune question, ne demande aucune confirmation. "
+    "Tu disposes d'outils RAG qdrant-find : 'rag-common' (doc transverse) et, si "
+    "présent, 'rag-project' (doc/conventions propres au projet courant). Consulte-les "
+    "avant d'agir pour respecter le contexte et les conventions du projet."
 )
 
 JOBS: dict[str, dict] = {}
@@ -183,6 +191,42 @@ def _base_branch(repo):
     return _git(repo, "rev-parse", "--abbrev-ref", "HEAD")
 
 
+def _rag_mcp(repo):
+    """MCP RAG : rag-common (toujours) + rag-project si la collection existe.
+
+    Retourne (config_dict, [outils mcp autorisés]).
+    """
+
+    def _server(coll):
+        return {
+            "command": "uvx",
+            "args": ["mcp-server-qdrant"],
+            "env": {
+                "QDRANT_URL": QDRANT_URL,
+                "COLLECTION_NAME": coll,
+                "EMBEDDING_MODEL": EMBED_MODEL,
+            },
+        }
+
+    servers = {"rag-common": _server(RAG_COMMON)}
+    tools = ["mcp__rag-common__qdrant-find"]
+    try:
+        with open(
+            os.path.join(repo, ".ai-to-boost", "config.json"), encoding="utf-8"
+        ) as f:
+            name = (json.load(f) or {}).get("name", "")
+        slug = re.sub(r"[^a-z0-9_-]", "-", name.lower())
+        coll = f"proj-{slug}"
+        with urllib.request.urlopen(f"{QDRANT_URL}/collections/{coll}", timeout=5) as r:
+            exists = r.status == 200
+        if exists:
+            servers["rag-project"] = _server(coll)
+            tools.append("mcp__rag-project__qdrant-find")
+    except Exception:
+        pass
+    return {"mcpServers": servers}, tools
+
+
 def _guard_settings():
     """Settings inline (prime sur le worktree) : hook PreToolUse sur Bash + écritures."""
     return json.dumps(
@@ -220,6 +264,11 @@ def run_job(job_id, prompt, repo, mode="file"):
             }
             env.setdefault("PATH", "/home/jprotin/.local/bin:/usr/bin:/bin")
             env["AGENT_AUDIT_LOG"] = audit_log
+            # RAG double-portée : MCP commun + projet (lecture qdrant-find).
+            rag_cfg, rag_tools = _rag_mcp(repo)
+            mcp_file = os.path.join(WORKROOT, f"{job_id}.mcp.json")
+            with open(mcp_file, "w", encoding="utf-8") as f:
+                json.dump(rag_cfg, f)
             # build : Bash autorisé mais bypassPermissions + garde-fou hook (bloque même
             #         en bypass) ; file : édition auto, pas de Bash.
             perm_mode = "bypassPermissions" if mode == "build" else "acceptEdits"
@@ -237,10 +286,14 @@ def run_job(job_id, prompt, repo, mode="file"):
                 str(MAXTURNS),
                 "--allowed-tools",
                 *ALLOWED_TOOLS.get(mode, ALLOWED_TOOLS["file"]),
+                *rag_tools,
                 "--disallowed-tools",
                 *DISALLOWED_TOOLS,
                 "--settings",
                 _guard_settings(),
+                "--mcp-config",
+                mcp_file,
+                "--strict-mcp-config",
                 "--append-system-prompt",
                 APPEND_SYSTEM_PROMPT,
             ]

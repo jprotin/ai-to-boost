@@ -169,6 +169,33 @@ BMAD est **installé une seule fois** (commun à tous les projets), pas par proj
 Validation (2026-06-16) : `/build` invoquant l'agent architecte BMAD a produit un
 `architecture.md` (persona « Winston ») ; diff = `architecture.md` seul (symlinks éjectés).
 
-## Suite
+## Palier 6b.3d (FAIT) — RAG double-portée
 
-- **6b.3d** : RAG double-portée (commun `knowledge` + `.ai-to-boost/rag/` par projet).
+L'agent s'appuie sur **deux RAG** via MCP (lecture `qdrant-find`) :
+
+- **commun** : collection `knowledge` (doc transverse, Phase 5).
+- **par projet** : collection `proj-<slug>` alimentée par `<projet>/.ai-to-boost/rag/`.
+
+Indexation projet :
+
+```bash
+scripts/ai-to-boost-rag-sync.sh <projet>   # → collection proj-<slug> (via ingest.py)
+```
+
+(le RAG commun s'indexe via `uv run services/rag/ingest.py` à la racine d'ai-to-boost).
+
+Injection par job (worker) : construit un `--mcp-config` éphémère avec `rag-common`
+(toujours) + `rag-project` (si la collection existe), lancé en `--strict-mcp-config`
+(ignore tout `.mcp.json` du projet) ; ajoute `mcp__rag-common__qdrant-find` et
+`mcp__rag-project__qdrant-find` aux `--allowed-tools`. Le system prompt indique à l'agent
+de consulter ces RAG. Config Qdrant reprise de l'env (`QDRANT_URL`, `RAG_COLLECTION`,
+`EMBEDDING_MODEL` — mêmes valeurs que le MCP commun pour la compatibilité des embeddings).
+
+Validation (2026-06-16) : doc `conventions.md` dans `sandbox/.ai-to-boost/rag/` → sync →
+`proj-sandbox` ; un `/build` a consulté `rag-project` et produit `server-config.md`
+reprenant les conventions (préfixe `sbx_`, port 7421, logs JSON). Diff propre.
+
+## Phase 6 — terminée
+
+6a (dispatcher) + 6b.1→6b.3d (worker agentique : isolation, async/Telegram, Bash sous
+garde-fou + audit, opt-in projet, BMAD commun, RAG double-portée). Voir `docs/phase6-plan.md`.
