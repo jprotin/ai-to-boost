@@ -132,7 +132,22 @@ une tentative `git push` est **bloquée** par le hook ; `/code` reste fichiers-s
 > À affiner en 6b.3b : brancher depuis une **base stable** (main) définie par l'init, pas
 > depuis le HEAD courant du repo cible.
 
+## Palier 6b.3b (FAIT) — init projet + marqueur + base stable
+
+ai-to-boost ne pilote que des projets **explicitement initialisés** (opt-in).
+
+- **`scripts/ai-to-boost-init.sh [<projet>]`** : pose `.ai-to-boost/config.json`
+  (`{name, base_branch, agent_enabled}`) + `.ai-to-boost/rag/` (RAG par projet, 6b.3d),
+  et ajoute `.ai-to-boost/` au `.gitignore` du projet (config privée). Refuse de cibler
+  ai-to-boost lui-même.
+- **Worker** : `_validate_repo` **exige** le marqueur `.ai-to-boost/` (sinon `400 :
+projet non initialisé`), togglable par `AGENT_REQUIRE_MARKER` (défaut `true`). Le job
+  branche désormais depuis **`base_branch`** (config), plus depuis le HEAD courant.
+
+Validation (2026-06-16) : repo sans marqueur → `400` ; sandbox initialisé → job branché
+depuis `master` (base stable). 1er projet enregistré : `~/agent-workspace/sandbox`.
+
 ## Suite
 
-- **6b.3b** : init projet (`ai-to-boost-init.sh` → marqueur `.ai-to-boost/` requis par le
-  worker) + installation BMAD + RAG double-portée (commun + par projet).
+- **6b.3c** : installation BMAD dans l'init (après vérif méthode non-interactive).
+- **6b.3d** : RAG double-portée (commun `knowledge` + `.ai-to-boost/rag/` par projet).
