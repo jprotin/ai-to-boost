@@ -72,8 +72,35 @@ git checkout agent/<id>          # ou cherry-pick / merge manuel après validati
   dans `~/.local/bin/claude` (PATH de l'unit).
 - Job `error` « repo cible interdit » : cibler un repo hors `AGENT_FORBID`.
 
+## Palier 6b.2 (FAIT) — boucle async vers l'origine
+
+Chaîne complète : `/code` depuis n'importe quelle entrée → diff renvoyé à l'origine.
+
+```
+dispatcher /code → POST worker /jobs {prompt, return_target}  → ack "Tâche #id acceptée"
+worker (async) → fin de job → POST n8n /webhook/job-callback {job state}
+n8n (11-job-callback) → POST poller :8090/notify {chat_id, text}  → Telegram
+```
+
+- Worker : `AGENT_DEFAULT_REPO` (repo cible si `/code` ne le précise pas),
+  `AGENT_CALLBACK_URL` (n8n) appelé en fin de job (best-effort).
+- Poller : endpoint `POST /notify {chat_id, text}` (port `NOTIFY_PORT=8090`, interne au
+  réseau Docker, token `NOTIFY_TOKEN`). **Le token Telegram reste confiné au poller**
+  (ADR 0003) ; l'allowlist s'applique aussi aux notifications.
+- n8n : workflow `11-job-callback.json` (webhook `job-callback`) ; credentials
+  `Agent token` + `Poller notify token`. Dispatcher : route `/code` → worker.
+- UX Telegram : 2 messages — l'ack immédiat, puis le résultat (branche + diff) en async.
+
+Test (sans spammer le vrai Telegram, chat_id non-allowlisté → poller 403) :
+
+```bash
+curl -s -X POST http://localhost:5678/webhook/assistant-in -H 'Content-Type: application/json' \
+  -d '{"chat_id":999,"text":"/code Crée note.txt contenant OK"}'
+# → ack ; branche agent/<id> créée ; callback OK (worker sans erreur)
+```
+
+Test réel : envoyer `/code …` au bot Telegram → ack puis résultat.
+
 ## Suite
 
-- **6b.2** : callback async → n8n `/job-callback` → poller `/notify` → Telegram ; route
-  `/code` du dispatcher branchée sur `POST /jobs`.
 - **6b.3** : Bash scopé + hook `PreToolUse` (anti push/rm/sudo) + installation BMAD.

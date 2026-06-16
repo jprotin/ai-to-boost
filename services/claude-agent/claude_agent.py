@@ -31,6 +31,7 @@ import os
 import shutil
 import subprocess
 import threading
+import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -44,6 +45,10 @@ WORKROOT = os.environ.get(
     "AGENT_WORKROOT", os.path.expanduser("~/.local/share/claude-agent/worktrees")
 )
 CLAUDE = shutil.which("claude") or os.path.expanduser("~/.local/bin/claude")
+# Repo cible par défaut quand le job ne le précise pas (ex. appel depuis n8n /code).
+DEFAULT_REPO = os.environ.get("AGENT_DEFAULT_REPO", "")
+# Callback n8n appelé en fin de job (async) : n8n notifie ensuite l'origine.
+CALLBACK_URL = os.environ.get("AGENT_CALLBACK_URL", "")
 
 # Repos interdits comme cible (le worker ne doit jamais agir sur l'orchestrateur).
 _DEFAULT_FORBID = os.path.realpath(
@@ -79,6 +84,24 @@ def _git(repo, *args, check=True):
 def _set(job_id, **kw):
     with JOBS_LOCK:
         JOBS[job_id].update(kw)
+
+
+def _callback(job_id):
+    """Notifie n8n en fin de job (best-effort) ; n8n relaie vers l'origine."""
+    if not CALLBACK_URL:
+        return
+    with JOBS_LOCK:
+        payload = dict(JOBS.get(job_id, {}))
+    try:
+        req = urllib.request.Request(
+            CALLBACK_URL,
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception as exc:
+        print(f"[callback] échec pour {job_id}: {exc}", flush=True)
 
 
 def _validate_repo(repo):
@@ -179,6 +202,7 @@ def run_job(job_id, prompt, repo):
                 _git(repo, "worktree", "remove", worktree, "--force", check=False)
             except Exception:
                 pass
+    _callback(job_id)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -232,7 +256,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send(400, {"error": "missing 'prompt'"})
             return
         try:
-            repo = _validate_repo(data.get("repo") or "")
+            repo = _validate_repo(data.get("repo") or DEFAULT_REPO)
         except ValueError as exc:
             self._send(400, {"error": str(exc)})
             return
