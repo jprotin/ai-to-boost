@@ -18,7 +18,7 @@ et `bmad-start` **repointe par symlink**, vers le projet courant, tous les chemi
 | `_bmad-ui/agents/`               | `<projet>/.bmad-ui-state/agents/`    | sessions/analytics (état UI, **isolé par projet**) |
 | `_bmad-ui/artifacts/`            | `<projet>/.bmad-ui-state/artifacts/` | links/notes (état UI, isolé)                       |
 
-Une seule instance / port 5173 → **un projet à la fois** (bascule instantanée ;
+Une seule instance / port 5273 → **un projet à la fois** (bascule instantanée ;
 `bmad-start` tue l'instance précédente). Pas de multi-projets simultanés.
 
 ## Installation (une fois)
@@ -36,7 +36,7 @@ Prérequis : node ≥ 24 + corepack (via nvm), `~/.local/bin` dans le PATH.
 
 ```bash
 cd ~/dev/mon-projet        # un projet avec docs/ et/ou _bmad-output/
-bmad-start                 # → http://localhost:5173, focalisé sur ce projet
+bmad-start                 # → http://localhost:5273, focalisé sur ce projet
 ```
 
 Override possibles : `BMAD_UI_GLOBAL` (dossier central), `BMAD_UI_PORT`.

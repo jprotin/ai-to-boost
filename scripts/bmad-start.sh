@@ -9,12 +9,15 @@
 #   état UI  : GLOBAL/_bmad-ui/agents, GLOBAL/_bmad-ui/artifacts (isolés par projet)
 # Une seule instance / un port → un projet à la fois (bascule instantanée).
 #
+# Port DÉDIÉ 5273 (pas le 5173 par défaut de Vite, pour ne pas entrer en conflit
+# avec d'autres apps Vite) ; surchargeable par BMAD_UI_PORT.
+#
 # Usage : se placer dans un projet (avec _bmad-output/ et/ou docs/) puis : bmad-start
 set -euo pipefail
 
 GLOBAL="${BMAD_UI_GLOBAL:-$HOME/.bmad-ui-global}"
 APP="$GLOBAL/_bmad-ui"
-PORT="${BMAD_UI_PORT:-5173}"
+PORT="${BMAD_UI_PORT:-5273}"
 
 die() {
   printf 'bmad-start: %s\n' "$1" >&2
@@ -48,7 +51,7 @@ mkdir -p "$STATE/agents" "$STATE/artifacts"
 ln -sfn "$STATE/agents" "$APP/agents"
 ln -sfn "$STATE/artifacts" "$APP/artifacts"
 
-# --- une seule instance : stoppe l'éventuelle précédente ---
+# --- une seule instance : stoppe l'éventuelle précédente sur NOTRE port dédié ---
 if command -v lsof >/dev/null 2>&1; then
   lsof -ti "tcp:$PORT" 2>/dev/null | xargs -r kill 2>/dev/null || true
   sleep 1
@@ -61,4 +64,6 @@ if [ -s "$NVM_DIR/nvm.sh" ]; then
   . "$NVM_DIR/nvm.sh"
 fi
 cd "$APP"
-exec corepack pnpm dev
+# pnpm exec vite : passe les args directement à vite (évite l'ambiguïté du `--` via pnpm).
+# --strictPort : échoue si le port est pris, plutôt que de migrer silencieusement.
+exec corepack pnpm exec vite --port "$PORT" --strictPort
