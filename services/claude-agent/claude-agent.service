@@ -1,0 +1,22 @@
+# systemd user unit — worker agentique (claude -p AVEC outils, isolé en worktree)
+# Install :
+#   cp services/claude-agent/claude-agent.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
+#   systemctl --user enable --now claude-agent
+#   loginctl enable-linger "$USER"   # démarrage au boot sans session ouverte
+[Unit]
+Description=Claude agent worker (claude -p +outils, isolé git worktree, forfait)
+After=network-online.target
+
+[Service]
+Type=simple
+# Variables : AGENT_TOKEN, AGENT_* (cf. .env du projet)
+EnvironmentFile=/datadisk/ai-projects/ai-to-boost/.env
+# PATH avec ~/.local/bin pour le binaire claude (natif). PAS d'ANTHROPIC_API_KEY ici.
+Environment=PATH=/home/jprotin/.local/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /datadisk/ai-projects/ai-to-boost/services/claude-agent/claude_agent.py
+Restart=on-failure
+RestartSec=3
+
+[Install]
+WantedBy=default.target

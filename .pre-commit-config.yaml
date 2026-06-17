@@ -1,0 +1,174 @@
+# .pre-commit-config.yaml — Template standard (multi-langages)
+# Installation : pip install pre-commit && pre-commit install
+# Exécution manuelle : pre-commit run --all-files
+# Adapter : commenter les sections inutiles selon les langages du projet.
+
+default_install_hook_types:
+  - pre-commit
+  - commit-msg
+
+repos:
+  # ---------- Transverses (toujours actifs) ----------
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-merge-conflict
+      - id: check-added-large-files
+        args: ["--maxkb=1024"]
+      - id: check-case-conflict
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+      - id: check-json
+      - id: check-yaml
+        args: ["--allow-multiple-documents"]
+      - id: check-toml
+      - id: mixed-line-ending
+        args: ["--fix=lf"]
+      - id: detect-private-key
+      - id: no-commit-to-branch
+        # develop reçoit les merges feature/* en GitFlow → ne pas le bloquer ici
+        # (les commits de travail directs restent interdits par gitflow-guard.sh)
+        args: ["--branch", "main", "--branch", "master"]
+
+  # ---------- Secrets ----------
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.21.2
+    hooks:
+      - id: gitleaks
+
+  - repo: https://github.com/Yelp/detect-secrets
+    rev: v1.5.0
+    hooks:
+      - id: detect-secrets
+        args: ["--baseline", ".secrets.baseline"]
+        # Créer baseline : detect-secrets scan > .secrets.baseline
+        # Exclut les templates de secrets (.dist, .example) qui contiennent des placeholders
+        exclude: \.(tfvars|env|yaml|yml|ini|conf)\.(dist|example|sample|template)$|\.env\.example$|\.env\.dist$
+
+  # ---------- Markdown ----------
+  - repo: https://github.com/igorshubovych/markdownlint-cli
+    rev: v0.42.0
+    hooks:
+      - id: markdownlint
+        args: ["--fix"]
+
+  # ---------- YAML ----------
+  - repo: https://github.com/adrienverge/yamllint
+    rev: v1.35.1
+    hooks:
+      - id: yamllint
+        args: ["-c", ".yamllint"]
+
+  # ---------- Shell ----------
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.10.0.1
+    hooks:
+      - id: shellcheck
+
+  - repo: https://github.com/scop/pre-commit-shfmt
+    rev: v3.10.0-2
+    hooks:
+      - id: shfmt
+        args: ["-w", "-i", "2", "-ci"]
+
+  # ---------- Terraform ----------
+  - repo: https://github.com/antonbabenko/pre-commit-terraform
+    rev: v1.96.1
+    hooks:
+      - id: terraform_fmt
+      - id: terraform_validate
+      - id: terraform_tflint
+        args:
+          - "--args=--minimum-failure-severity=warning"
+      - id: terraform_tfsec
+        exclude: ^examples/
+      - id: terraform_checkov
+        args:
+          - "--args=--quiet"
+          - "--args=--skip-check CKV_TF_1"
+          - "--args=--skip-path examples"
+
+  # ---------- Docker ----------
+  - repo: https://github.com/hadolint/hadolint
+    rev: v2.13.1-beta
+    hooks:
+      - id: hadolint-docker
+
+  # ---------- SQL ----------
+  - repo: https://github.com/sqlfluff/sqlfluff
+    rev: 3.2.5
+    hooks:
+      - id: sqlfluff-lint
+        # Créer .sqlfluff à la racine avec le dialect (postgres/mysql/bigquery…)
+      - id: sqlfluff-fix
+
+  # ---------- Ansible ----------
+  # Utilise le binaire ansible-lint installé via pipx (voir claude-install-prereqs.sh --groups ansible)
+  # Plus fiable que la version en repo pre-commit (bugs de dépendances récurrents).
+  - repo: local
+    hooks:
+      - id: ansible-lint
+        name: ansible-lint (pipx)
+        entry: ansible-lint
+        language: system
+        files: \.(yml|yaml)$
+        # Exclut les YAML qui ne sont pas des playbooks Ansible :
+        # - cloud-init*.yaml (cloud-init, pas Ansible)
+        # - docker-compose*.yml et compose.yaml (Docker, pas Ansible)
+        # - .pre-commit-config.yaml, .yamllint, .markdownlint.json
+        # - dossiers GitHub/examples/docs/k8s
+        exclude: ^(\.github|examples|docs|k8s|kubernetes)/|cloud-init.*\.(yml|yaml)$|docker-compose.*\.(yml|yaml)$|(^|/)compose\.ya?ml$|^\.pre-commit-config\.yaml$|^\.yamllint$
+        pass_filenames: true
+
+  # ---------- Python ----------
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.7.4
+    hooks:
+      - id: ruff
+        args: ["--fix"]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.13.0
+    hooks:
+      - id: mypy
+        additional_dependencies: []
+
+  # ---------- JS / TS ----------
+  - repo: https://github.com/pre-commit/mirrors-prettier
+    rev: v4.0.0-alpha.8
+    hooks:
+      - id: prettier
+        types_or:
+          [javascript, jsx, ts, tsx, json, yaml, markdown, css, scss, html]
+
+  - repo: https://github.com/pre-commit/mirrors-eslint
+    rev: v9.14.0
+    hooks:
+      - id: eslint
+        files: \.[jt]sx?$
+        types: [file]
+        additional_dependencies:
+          - eslint@9.14.0
+
+  # ---------- PHP ----------
+  - repo: https://github.com/digitalpulp/pre-commit-php
+    rev: 1.4.0
+    hooks:
+      - id: php-cs-fixer
+        files: \.php$
+      - id: php-stan
+        files: \.php$
+
+  # ---------- Local custom hooks ----------
+  - repo: local
+    hooks:
+      - id: no-todo-fixme-on-main
+        name: Empêcher TODO/FIXME sans ticket
+        # Cherche uniquement dans les langages de code, exclut les configs/docs qui décrivent la règle.
+        entry: bash -c 'if git diff --cached --diff-filter=AM -- "*.py" "*.js" "*.ts" "*.tsx" "*.jsx" "*.go" "*.rs" "*.rb" "*.php" "*.sh" "*.tf" "*.java" "*.c" "*.cpp" "*.h" "*.hpp" | grep -E "^\+.*\b(TODO|FIXME|XXX)\b" | grep -vE "#[0-9]|[A-Z]+-[0-9]"; then echo "TODO/FIXME sans reference ticket detecte"; exit 1; fi'
+        language: system
+        pass_filenames: false
+        stages: [pre-commit]

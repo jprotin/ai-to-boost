@@ -1,0 +1,35 @@
+# LiteLLM — gateway des modèles LOCAUX (Phase 1)
+# Architecture : docs/adr/0001 (socle) + docs/adr/0002 (LiteLLM = local only)
+# Endpoint unique OpenAI-compatible : http://127.0.0.1:4000
+#
+# LiteLLM ne route QUE vers les modèles locaux (LM Studio, serveur natif).
+# Claude n'est PAS routé ici :
+#   - Claude à la main (BMAD)  -> Claude Code (forfait Max)
+#   - Claude automatisé (n8n)  -> `claude -p` headless / Agent SDK (forfait)
+# Une route Claude au token (clé API console) pourra être ajoutée plus tard
+# UNIQUEMENT pour une tâche programmatique lourde — cf. ADR 0002.
+---
+model_list:
+  # --- LM Studio local (OpenAI-compatible, hors compose) ---
+  # Contrainte 12 Go VRAM : un seul gros modèle chargé à la fois (load/unload via `lms`).
+  - model_name: local-gemma
+    litellm_params:
+      model: openai/google/gemma-4-e4b
+      api_base: os.environ/LMSTUDIO_BASE_URL
+      api_key: lm-studio # pragma: allowlist secret (placeholder, LM Studio n'exige pas de clé)
+  - model_name: local-qwen
+    litellm_params:
+      model: openai/qwen/qwen3.6-27b
+      api_base: os.environ/LMSTUDIO_BASE_URL
+      api_key: lm-studio # pragma: allowlist secret
+  - model_name: local-embed
+    litellm_params:
+      model: openai/text-embedding-nomic-embed-text-v1.5
+      api_base: os.environ/LMSTUDIO_BASE_URL
+      api_key: lm-studio # pragma: allowlist secret
+
+litellm_settings:
+  drop_params: true # ignore les params non supportés par le backend local
+
+general_settings:
+  master_key: os.environ/LITELLM_MASTER_KEY

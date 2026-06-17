@@ -1,0 +1,270 @@
+{
+  "id": "dispatcher000001",
+  "name": "Phase 6a — dispatcher (routeur unique)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "assistant-in",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000001",
+      "name": "Webhook assistant-in",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [220, 320],
+      "webhookId": "assistant-in"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Normalise toutes les entrées vers {command, payload, return_target, source, mode}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet mode = 'file';\nlet payload = text;\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  if (c === 'chat' || c === 'claude' || c === 'code' || c === 'build') {\n    command = (c === 'chat' || c === 'claude') ? c : 'code';\n    mode = (c === 'build') ? 'build' : 'file';\n    payload = m[2].trim();\n  }\n}\nreturn [{ json: { command, payload, return_target, source, mode } }];"
+      },
+      "id": "a0000000-0000-0000-0000-000000000002",
+      "name": "Normalisation",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [440, 320]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "claude",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "claude"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "code",
+                    "operator": { "type": "string", "operation": "equals" }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "code"
+            }
+          ]
+        },
+        "options": { "fallbackOutput": "extra", "renameFallbackOutput": "chat" }
+      },
+      "id": "a0000000-0000-0000-0000-000000000003",
+      "name": "Switch commande",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [660, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8088/run",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prompt: $json.payload }) }}",
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000004",
+      "name": "Bridge claude -p",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 160],
+      "credentials": {
+        "httpHeaderAuth": { "id": "bridgetoken00001", "name": "Bridge token" }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r1",
+              "name": "reply",
+              "value": "={{ $json.result }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000005",
+      "name": "Reply claude",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1120, 160]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:8089/jobs",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ prompt: $json.payload, return_target: $json.return_target, mode: $json.mode }) }}",
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000006",
+      "name": "Lancer job (worker)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 320],
+      "credentials": {
+        "httpHeaderAuth": { "id": "agenttoken000001", "name": "Agent token" }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r2",
+              "name": "reply",
+              "value": "=🛠️ Tâche {{ $json.job_id }} acceptée — je te préviens quand c'est prêt.",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000007",
+      "name": "Reply code",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1120, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://litellm:4000/v1/chat/completions",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            { "name": "Content-Type", "value": "application/json" }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'local-gemma', messages: [{ role: 'user', content: $json.payload }], max_tokens: 2048 }) }}",
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000008",
+      "name": "LiteLLM local-gemma",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 500],
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "litellmmasterkey1",
+          "name": "LiteLLM master key"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "r3",
+              "name": "reply",
+              "value": "={{ $json.choices[0].message.content }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000009",
+      "name": "Reply chat",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1120, 500]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply: $json.reply }) }}",
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000010",
+      "name": "Répondre au webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [1360, 320]
+    }
+  ],
+  "connections": {
+    "Webhook assistant-in": {
+      "main": [[{ "node": "Normalisation", "type": "main", "index": 0 }]]
+    },
+    "Normalisation": {
+      "main": [[{ "node": "Switch commande", "type": "main", "index": 0 }]]
+    },
+    "Switch commande": {
+      "main": [
+        [{ "node": "Bridge claude -p", "type": "main", "index": 0 }],
+        [{ "node": "Lancer job (worker)", "type": "main", "index": 0 }],
+        [{ "node": "LiteLLM local-gemma", "type": "main", "index": 0 }]
+      ]
+    },
+    "Bridge claude -p": {
+      "main": [[{ "node": "Reply claude", "type": "main", "index": 0 }]]
+    },
+    "Reply claude": {
+      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+    },
+    "Lancer job (worker)": {
+      "main": [[{ "node": "Reply code", "type": "main", "index": 0 }]]
+    },
+    "Reply code": {
+      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+    },
+    "LiteLLM local-gemma": {
+      "main": [[{ "node": "Reply chat", "type": "main", "index": 0 }]]
+    },
+    "Reply chat": {
+      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}

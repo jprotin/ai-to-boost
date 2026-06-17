@@ -1,0 +1,164 @@
+# Assistant IA local orchestré — stack Docker Compose
+# Architecture : docs/adr/0001-architecture-assistant-ia-local-orchestre.md
+#
+# Les services sont ajoutés couche par couche :
+#   Phase 1 — litellm (gateway modèles LOCAUX)   [actif]
+#   Phase 2 — whisper (STT GPU, speaches)        [actif]
+#   Phase 3 — n8n     (orchestrateur)            [actif]
+#   Phase 4 — telegram-poller (entrée/sortie)    [actif]
+#   Phase 5 — qdrant  (RAG)                      [actif]
+#
+# LM Studio tourne en natif (hors compose) ; les conteneurs l'atteignent
+# via host.docker.internal (extra_hosts host-gateway).
+---
+name: ai-assistant
+
+networks:
+  ai-assistant-net:
+    name: ai-assistant-net
+    driver: bridge
+
+volumes:
+  litellm-db: # persistance Postgres (LiteLLM + base n8n)
+  whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
+  n8n-data: # données n8n (/home/node/.n8n : config, clés, binaires)
+  qdrant-data: # base vectorielle Qdrant (RAG)
+
+services:
+  # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)
+  litellm-db:
+    image: postgres:16-alpine
+    container_name: litellm-db
+    restart: unless-stopped
+    networks:
+      - ai-assistant-net
+    environment:
+      POSTGRES_USER: litellm
+      POSTGRES_DB: litellm
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD requis dans .env}
+      # Utilisé par le script initdb pour créer la base n8n (déploiement neuf)
+      N8N_DB_PASSWORD: ${N8N_DB_PASSWORD:?N8N_DB_PASSWORD requis dans .env}
+    volumes:
+      - litellm-db:/var/lib/postgresql/data
+      - ./services/litellm/initdb:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U litellm -d litellm"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # Phase 1 — gateway des modèles locaux (LM Studio) — cf. ADR 0002
+  litellm:
+    image: ghcr.io/berriai/litellm:main-stable
+    container_name: litellm
+    restart: unless-stopped
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:4000:4000" # exposé en local uniquement
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # accès au LM Studio natif
+    env_file: .env
+    volumes:
+      - ./services/litellm/config.yaml:/app/config.yaml:ro
+    command:
+      - "--config=/app/config.yaml"
+      - "--port=4000"
+
+  # Phase 2 — STT GPU (speaches, OpenAI-compatible /v1/audio/transcriptions)
+  whisper:
+    image: ghcr.io/speaches-ai/speaches:latest-cuda
+    container_name: whisper
+    restart: unless-stopped
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:8000:8000" # exposé en local uniquement
+    environment:
+      WHISPER__MODEL: Systran/faster-whisper-medium
+      WHISPER__INFERENCE_DEVICE: cuda
+      WHISPER__COMPUTE_TYPE: float16
+      ENABLE_UI: "false" # backend STT : pas d'UI gradio
+      DO_NOT_TRACK: "1" # coupe la télémétrie gradio
+      HF_HUB_DISABLE_TELEMETRY: "1" # coupe la télémétrie HuggingFace
+    volumes:
+      - whisper-cache:/home/ubuntu/.cache # cache HuggingFace (modèles)
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Phase 3 — orchestrateur (workflows : whisper + LiteLLM ; Claude via claude -p plus tard)
+  n8n:
+    image: docker.n8n.io/n8nio/n8n:latest
+    container_name: n8n
+    restart: unless-stopped
+    depends_on:
+      litellm-db:
+        condition: service_healthy
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:5678:5678" # exposé en local uniquement
+    extra_hosts:
+      - "host.docker.internal:host-gateway" # pour le futur bridge claude -p (hôte)
+    environment:
+      # Persistance : réutilise l'instance Postgres litellm-db (base + rôle n8n)
+      DB_TYPE: postgresdb
+      DB_POSTGRESDB_HOST: litellm-db
+      DB_POSTGRESDB_PORT: "5432"
+      DB_POSTGRESDB_DATABASE: n8n
+      DB_POSTGRESDB_USER: n8n
+      DB_POSTGRESDB_PASSWORD: ${N8N_DB_PASSWORD:?N8N_DB_PASSWORD requis dans .env}
+      N8N_ENCRYPTION_KEY: ${N8N_ENCRYPTION_KEY:?N8N_ENCRYPTION_KEY requis dans .env}
+      N8N_HOST: localhost
+      N8N_PORT: "5678"
+      N8N_PROTOCOL: http
+      WEBHOOK_URL: http://localhost:5678/
+      GENERIC_TIMEZONE: Europe/Paris
+      TZ: Europe/Paris
+      N8N_DIAGNOSTICS_ENABLED: "false" # télémétrie off (local-first)
+      N8N_PERSONALIZATION_ENABLED: "false"
+      N8N_RUNNERS_ENABLED: "true" # task runners (recommandé n8n)
+    volumes:
+      - n8n-data:/home/node/.n8n
+
+  # Phase 4 — adaptateur Telegram (polling local : voix->whisper, cerveau n8n)
+  telegram-poller:
+    image: python:3.12-slim
+    container_name: telegram-poller
+    restart: unless-stopped
+    depends_on:
+      - n8n
+      - whisper
+    networks:
+      - ai-assistant-net
+    env_file: .env # TELEGRAM_BOT_TOKEN + TELEGRAM_ALLOWED_CHAT_IDS
+    environment:
+      N8N_WEBHOOK_URL: http://n8n:5678/webhook/assistant-in # Phase 6a : dispatcher unique
+      WHISPER_URL: http://whisper:8000
+      WHISPER_MODEL: Systran/faster-whisper-medium
+    volumes:
+      - ./services/telegram-poller/poller.py:/app/poller.py:ro
+    command: ["python", "/app/poller.py"]
+
+  # Phase 5 — base vectorielle (RAG). Local-only, sans clé API en v1 (cf. runbook).
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: qdrant
+    restart: unless-stopped
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:6333:6333" # REST/UI, exposé en local uniquement
+      - "127.0.0.1:6334:6334" # gRPC
+    environment:
+      QDRANT__TELEMETRY_DISABLED: "true"
+    volumes:
+      - qdrant-data:/qdrant/storage

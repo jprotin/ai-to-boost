@@ -1,0 +1,53 @@
+{
+  "name": "Phase 4 — assistant Telegram (cerveau)",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "telegram-in",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "cccccccc-cccc-cccc-cccc-cccccccccccc",
+      "name": "Webhook telegram-in",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [240, 300],
+      "webhookId": "telegram-in"
+    },
+    {
+      "parameters": {
+        "jsCode": "// Routage : '/claude ...' -> bridge Claude opus (forfait) ; sinon -> local-gemma.\n// Remplace les 2 placeholders par les vraies clés (LITELLM_MASTER_KEY et BRIDGE_TOKEN du .env).\nconst LITELLM_KEY = 'CHANGEME_LITELLM_MASTER_KEY';\nconst BRIDGE_TOKEN = 'CHANGEME_BRIDGE_TOKEN';\n\nconst text = ($json.body?.text || '').trim();\nconst isClaude = /^\\/claude\\b/i.test(text);\nlet reply;\n\nif (isClaude) {\n  const prompt = text.replace(/^\\/claude\\s*/i, '');\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'http://host.docker.internal:8088/run',\n    headers: { Authorization: 'Bearer ' + BRIDGE_TOKEN, 'Content-Type': 'application/json' },\n    body: { prompt },\n    json: true,\n    timeout: 120000,\n  });\n  reply = res.result;\n} else {\n  const res = await this.helpers.httpRequest({\n    method: 'POST',\n    url: 'http://litellm:4000/v1/chat/completions',\n    headers: { Authorization: 'Bearer ' + LITELLM_KEY, 'Content-Type': 'application/json' },\n    body: { model: 'local-gemma', messages: [{ role: 'user', content: text }], max_tokens: 2048 },\n    json: true,\n    timeout: 120000,\n  });\n  reply = res.choices[0].message.content;\n}\n\nreturn [{ json: { reply } }];"
+      },
+      "id": "dddddddd-dddd-dddd-dddd-dddddddddddd",
+      "name": "Routage LLM (local / claude)",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ reply: $json.reply }) }}",
+        "options": {}
+      },
+      "id": "eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee",
+      "name": "Répondre au webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [720, 300]
+    }
+  ],
+  "connections": {
+    "Webhook telegram-in": {
+      "main": [
+        [{ "node": "Routage LLM (local / claude)", "type": "main", "index": 0 }]
+      ]
+    },
+    "Routage LLM (local / claude)": {
+      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+    }
+  },
+  "settings": { "executionOrder": "v1" },
+  "active": false
+}
