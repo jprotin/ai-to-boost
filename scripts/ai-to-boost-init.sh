@@ -54,10 +54,10 @@ Doc spécifique à ce projet, indexée en plus du RAG commun d'ai-to-boost.
 Déposer ici les `.md`/`.txt` propres au projet (cf. Phase 6b.3d).
 MD
 
-# Config privée : ne pas versionner le marqueur dans le projet cible.
+# Config privée : ne pas versionner le marqueur ni l'état UI bmad-ui dans le projet.
 GI="$PROJECT/.gitignore"
 if ! { [ -f "$GI" ] && grep -qxF ".ai-to-boost/" "$GI"; }; then
-  printf '\n# config privée ai-to-boost (orchestrateur)\n.ai-to-boost/\n' >>"$GI"
+  printf '\n# config privée ai-to-boost (orchestrateur)\n.ai-to-boost/\n.bmad-ui-state/\n' >>"$GI"
 fi
 
 echo "OK — projet '$NAME' initialisé (base_branch=$BASE)"
