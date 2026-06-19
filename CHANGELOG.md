@@ -3,6 +3,16 @@
 Toutes les évolutions notables de ce projet. Format inspiré de [Keep a Changelog](https://keepachangelog.com/),
 versionnage [SemVer](https://semver.org/).
 
+## [Non publié]
+
+### Ajouté
+
+- **BMAD en interactif par projet** : `ai-to-boost-init.sh` expose désormais BMAD
+  (symlinks `_bmad/` + `.claude/skills/bmad-*` vers le partagé `~/agent-workspace/.bmad-shared`)
+  dans le projet cible. Les skills `/bmad-help`, `/bmad-prd`, … deviennent disponibles en
+  session Claude Code interactive (en miroir de l'injection temporaire du worker). Symlinks
+  non versionnés.
+
 ## [1.0.0] — 2026-06-17
 
 Première version stable : assistant IA **local-first orchestré**, de la voix à

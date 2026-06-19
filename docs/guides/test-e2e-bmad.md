@@ -29,7 +29,10 @@ git init -q && git add -A && git commit -q -m "init"
 /datadisk/ai-projects/ai-to-boost/scripts/ai-to-boost-init.sh .
 ```
 
-→ marqueur `.ai-to-boost/` requis par le worker (base_branch détectée).
+→ marqueur `.ai-to-boost/` requis par le worker (base_branch détectée). L'init **expose
+aussi BMAD en interactif** (symlinks `_bmad/` + `.claude/skills/bmad-*` vers le partagé) :
+dans une session Claude Code sur ce projet, `/bmad-help`, `/bmad-prd`, etc. deviennent
+disponibles. `/bmad-help` lit l'état du projet et recommande la prochaine étape.
 
 **Cibler ce projet** : le poller Telegram n'envoie pas de chemin → le worker utilise
 `AGENT_DEFAULT_REPO`. Pour viser `~/dev/demo-todo` :
