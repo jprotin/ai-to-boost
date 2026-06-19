@@ -32,6 +32,37 @@ NAME="$(basename "$PROJECT")"
 # Base branch : branche courante du projet (sinon main).
 BASE="$(git -C "$PROJECT" symbolic-ref --short HEAD 2>/dev/null || echo main)"
 
+# BMAD commun : même source que le worker agentique (AGENT_BMAD_DIR).
+BMAD_SHARED="${AGENT_BMAD_DIR:-$HOME/agent-workspace/.bmad-shared}"
+
+# expose_bmad — rend BMAD utilisable EN INTERACTIF dans le projet (persistant), en
+# miroir de ce que le worker fait temporairement dans son worktree (_inject_bmad) :
+#   - _bmad/                -> partagé (config + agents/workflows, dont _config/bmad-help.csv)
+#   - .claude/skills/bmad-* -> partagé (skills découvrables : /bmad-help, /bmad-prd, …)
+# Les artefacts restent locaux (_bmad-output/ du projet). Symlinks => jamais committés.
+expose_bmad() {
+  local skills_src="$BMAD_SHARED/.claude/skills"
+  if [ ! -d "$BMAD_SHARED/_bmad" ] || [ ! -d "$skills_src" ]; then
+    echo "  BMAD : partagé introuvable ($BMAD_SHARED) — skills interactifs non exposés"
+    return 0
+  fi
+
+  # _bmad partagé (config/agents/workflows) ; les sorties restent dans $PROJECT/_bmad-output
+  ln -sfn "$BMAD_SHARED/_bmad" "$PROJECT/_bmad"
+
+  # Skills découvrables par Claude Code en session interactive (per-skill : n'écrase
+  # pas d'éventuels skills propres au projet).
+  mkdir -p "$PROJECT/.claude/skills"
+  local n=0 d
+  for d in "$skills_src"/bmad-*/; do
+    [ -d "$d" ] || continue
+    ln -sfn "${d%/}" "$PROJECT/.claude/skills/$(basename "$d")"
+    n=$((n + 1))
+  done
+
+  echo "  BMAD : $n skills exposés (/bmad-help dispo en interactif) -> $BMAD_SHARED"
+}
+
 MARK="$PROJECT/.ai-to-boost"
 mkdir -p "$MARK/rag"
 
@@ -54,10 +85,14 @@ Doc spécifique à ce projet, indexée en plus du RAG commun d'ai-to-boost.
 Déposer ici les `.md`/`.txt` propres au projet (cf. Phase 6b.3d).
 MD
 
-# Config privée : ne pas versionner le marqueur ni l'état UI bmad-ui dans le projet.
+# Expose BMAD en interactif (symlinks vers le partagé).
+expose_bmad
+
+# Config privée : ne pas versionner le marqueur, l'état UI bmad-ui, ni les symlinks BMAD
+# (BMAD est partagé/mis à jour centralement, jamais committé dans le projet cible).
 GI="$PROJECT/.gitignore"
 if ! { [ -f "$GI" ] && grep -qxF ".ai-to-boost/" "$GI"; }; then
-  printf '\n# config privée ai-to-boost (orchestrateur)\n.ai-to-boost/\n.bmad-ui-state/\n' >>"$GI"
+  printf '\n# config privée ai-to-boost (orchestrateur)\n.ai-to-boost/\n.bmad-ui-state/\n/_bmad\n/.claude/skills/bmad-*\n' >>"$GI"
 fi
 
 echo "OK — projet '$NAME' initialisé (base_branch=$BASE)"
