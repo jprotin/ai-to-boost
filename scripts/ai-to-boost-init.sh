@@ -90,10 +90,16 @@ expose_bmad
 
 # Config privée : ne pas versionner le marqueur, l'état UI bmad-ui, ni les symlinks BMAD
 # (BMAD est partagé/mis à jour centralement, jamais committé dans le projet cible).
+# Idempotent par pattern : un projet déjà initialisé reçoit les patterns manquants
+# (ex. ceux ajoutés après une mise à jour de ce script).
 GI="$PROJECT/.gitignore"
-if ! { [ -f "$GI" ] && grep -qxF ".ai-to-boost/" "$GI"; }; then
-  printf '\n# config privée ai-to-boost (orchestrateur)\n.ai-to-boost/\n.bmad-ui-state/\n/_bmad\n/.claude/skills/bmad-*\n' >>"$GI"
+gi_has() { [ -f "$GI" ] && grep -qxF "$1" "$GI"; }
+if ! gi_has ".ai-to-boost/"; then
+  printf '\n# config privée ai-to-boost (orchestrateur)\n' >>"$GI"
 fi
+for pat in ".ai-to-boost/" ".bmad-ui-state/" "/_bmad" "/.claude/skills/bmad-*"; do
+  gi_has "$pat" || printf '%s\n' "$pat" >>"$GI"
+done
 
 echo "OK — projet '$NAME' initialisé (base_branch=$BASE)"
 echo "  marqueur : $MARK/config.json"
