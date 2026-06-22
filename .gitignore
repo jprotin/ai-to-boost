@@ -108,6 +108,9 @@ composer.phar
 /knowledge/*
 !/knowledge/README.md
 
+# ===== bmad-ui (état runtime local, non versionné) =====
+.bmad-ui-state/
+
 # ===== Misc build outputs =====
 target/
 bin/
