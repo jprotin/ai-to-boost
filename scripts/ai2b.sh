@@ -343,6 +343,85 @@ cmd_ui() {
 }
 
 # ==============================================================================
+# Commandes — pipeline BMAD (Lot B, ADR 0004)
+# ==============================================================================
+_agent_endpoint() { # imprime "port token" pour le worker
+  local port token
+  port="$(env_get AGENT_PORT)"
+  port="${port:-8089}"
+  token="$(env_get AGENT_TOKEN)"
+  [ -n "$token" ] || die "AGENT_TOKEN absent de $ENV_FILE"
+  printf '%s %s\n' "$port" "$token"
+}
+
+_resolve_pid() { # <id?>  → id explicite, sinon dernier pipeline du projet actif
+  local id="${1:-}" name
+  if [ -z "$id" ]; then
+    name="$(require_active)"
+    id="$(reg -r --arg n "$name" '.projects[$n].last_pipeline // empty')"
+    [ -n "$id" ] || die "aucun pipeline récent (préciser un id : ai2b pipeline <id>)"
+  fi
+  printf '%s' "$id"
+}
+
+cmd_run() {
+  need curl
+  need jq
+  local spec="$*"
+  [ -n "$spec" ] || die "usage: ai2b run \"<besoin>\""
+  local name path port token
+  name="$(require_active)"
+  path="$(proj_path "$name")"
+  read -r port token < <(_agent_endpoint)
+  local body resp pid
+  body="$(jq -nc --arg p "$spec" --arg r "$path" '{prompt:$p, repo:$r}')"
+  resp="$(curl -s --max-time 15 -X POST "http://localhost:$port/pipelines" \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$body")" ||
+    die "worker injoignable (:$port)"
+  pid="$(printf '%s' "$resp" | jq -r '.pipeline_id // empty')"
+  [ -n "$pid" ] || die "worker a refusé : $resp"
+  reg_write --arg n "$name" --arg id "$pid" '.projects[$n].last_pipeline=$id'
+  ok "pipeline ${c_bold}$pid${c_reset} démarré sur '$name'"
+  info "  suivi : ai2b pipeline   |   au jalon : ai2b approve | ai2b revise \"<retour>\" | ai2b stop"
+}
+
+cmd_pipeline() {
+  need curl
+  need jq
+  local id port token
+  id="$(_resolve_pid "${1:-}")"
+  read -r port token < <(_agent_endpoint)
+  curl -s --max-time 5 -H "Authorization: Bearer $token" \
+    "http://localhost:$port/pipelines/$id" |
+    jq '{pipeline_id, status, phase, awaiting, last_artifact, branch, base, error}' ||
+    die "worker injoignable"
+}
+
+_resume() { # <decision>
+  need curl
+  need jq
+  local decision="$1" id port token body resp
+  id="$(_resolve_pid "")"
+  read -r port token < <(_agent_endpoint)
+  body="$(jq -nc --arg d "$decision" '{decision:$d}')"
+  resp="$(curl -s --max-time 10 -X POST "http://localhost:$port/pipelines/$id/resume" \
+    -H "Authorization: Bearer $token" -H "Content-Type: application/json" -d "$body")" ||
+    die "worker injoignable"
+  if printf '%s' "$resp" | jq -e 'has("error") and .error != null' >/dev/null 2>&1; then
+    die "$(printf '%s' "$resp" | jq -r '.error')"
+  fi
+  ok "${decision%%:*} → pipeline $id"
+}
+
+cmd_approve() { _resume "approve"; }
+cmd_revise() {
+  local fb="$*"
+  [ -n "$fb" ] || die "usage: ai2b revise \"<retour>\""
+  _resume "revise:$fb"
+}
+cmd_stop() { _resume "stop"; }
+
+# ==============================================================================
 cmd_help() {
   cat <<EOF
 ${c_bold}ai2b${c_reset} — tour de contrôle ai-to-boost
@@ -361,11 +440,18 @@ ${c_bold}Services${c_reset}
   ai2b restart [service]    redémarre tout, ou un service (worker|bridge|<compose>)
   ai2b logs <service>       suit les logs d'un service
 
-${c_bold}Projet actif${c_reset}
+${c_bold}Projet actif — tâche one-shot${c_reset}
   ai2b build "<spec>"       lance une tâche agentique (Bash autorisé)
   ai2b code  "<spec>"       lance une tâche agentique (édition de fichiers)
   ai2b job <id>             état d'une tâche
   ai2b ui                   ouvre bmad-ui focalisé sur le projet actif
+
+${c_bold}Projet actif — pipeline BMAD${c_reset}
+  ai2b run "<besoin>"       démarre le pipeline BMAD (analyst→PM→… avec jalons)
+  ai2b pipeline [id]        état du pipeline (défaut : le dernier)
+  ai2b approve              valide le jalon courant et continue
+  ai2b revise "<retour>"    rejoue la phase en attente avec un retour
+  ai2b stop                 arrête le pipeline
 
 Registre : $REGISTRY
 Projets par défaut : $PROJECTS_DIR
@@ -392,6 +478,11 @@ main() {
     code) cmd_code "$@" ;;
     job) cmd_job "$@" ;;
     ui) cmd_ui "$@" ;;
+    run) cmd_run "$@" ;;
+    pipeline | pl) cmd_pipeline "$@" ;;
+    approve | ok) cmd_approve "$@" ;;
+    revise) cmd_revise "$@" ;;
+    stop) cmd_stop "$@" ;;
     help | -h | --help) cmd_help ;;
     *)
       warn "commande inconnue : $cmd"

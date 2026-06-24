@@ -74,6 +74,11 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
 RAG_COMMON = os.environ.get("RAG_COLLECTION", "knowledge")
 EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 
+# Pipeline BMAD multi-persona/multi-LLM (Lot B, ADR 0004).
+# LiteLLM = passerelle des modèles LOCAUX (planning) ; Claude reste sur claude -p (forfait).
+LITELLM_URL = os.environ.get("LITELLM_URL", "http://127.0.0.1:4000")
+LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
+
 # Modes : "file" (défaut, outils fichiers) / "build" (Bash en plus, sous garde-fou).
 ALLOWED_TOOLS = {
     "file": ["Read", "Edit", "Write"],
@@ -243,10 +248,72 @@ def _guard_settings():
     )
 
 
+def _run_claude_tools(worktree, repo, prompt, mode, tag):
+    """Cœur d'appel `claude -p` AVEC outils (Read/Edit/Write[/Bash]) sous garde-fou + RAG,
+    dans un worktree donné. NE gère NI le worktree, NI BMAD, NI le commit, NI RUN_LOCK :
+    l'appelant s'en charge (réutilisé par run_job one-shot ET la boucle dev-story du
+    pipeline). Retourne {summary, cost_usd, audit}. Lève en cas d'échec claude."""
+    audit_log = os.path.join(WORKROOT, f"{tag}.audit.log")
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    }
+    env.setdefault("PATH", "/home/jprotin/.local/bin:/usr/bin:/bin")
+    env["AGENT_AUDIT_LOG"] = audit_log
+    # RAG double-portée : MCP commun + projet (lecture qdrant-find).
+    rag_cfg, rag_tools = _rag_mcp(repo)
+    mcp_file = os.path.join(WORKROOT, f"{tag}.mcp.json")
+    with open(mcp_file, "w", encoding="utf-8") as f:
+        json.dump(rag_cfg, f)
+    # build : Bash autorisé mais bypassPermissions + garde-fou hook (bloque même
+    #         en bypass) ; file : édition auto, pas de Bash.
+    perm_mode = "bypassPermissions" if mode == "build" else "acceptEdits"
+    cmd = [
+        CLAUDE,
+        "-p",
+        prompt,
+        "--model",
+        MODEL,
+        "--output-format",
+        "json",
+        "--permission-mode",
+        perm_mode,
+        "--max-turns",
+        str(MAXTURNS),
+        "--allowed-tools",
+        *ALLOWED_TOOLS.get(mode, ALLOWED_TOOLS["file"]),
+        *rag_tools,
+        "--disallowed-tools",
+        *DISALLOWED_TOOLS,
+        "--settings",
+        _guard_settings(),
+        "--mcp-config",
+        mcp_file,
+        "--strict-mcp-config",
+        "--append-system-prompt",
+        APPEND_SYSTEM_PROMPT,
+    ]
+    proc = subprocess.run(
+        cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=TIMEOUT
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"claude exit {proc.returncode}")
+    result = json.loads(proc.stdout or "{}")
+    audit = []
+    if os.path.exists(audit_log):
+        with open(audit_log, encoding="utf-8") as f:
+            audit = [line.rstrip("\n") for line in f if line.strip()]
+    return {
+        "summary": result.get("result", ""),
+        "cost_usd": result.get("total_cost_usd"),
+        "audit": audit,
+    }
+
+
 def run_job(job_id, prompt, repo, mode="file"):
     branch = f"agent/{job_id}"
     worktree = os.path.join(WORKROOT, job_id)
-    audit_log = os.path.join(WORKROOT, f"{job_id}.audit.log")
     with RUN_LOCK:
         _set(job_id, status="running")
         try:
@@ -257,77 +324,14 @@ def run_job(job_id, prompt, repo, mode="file"):
             return
         bmad = _inject_bmad(worktree)
         try:
-            env = {
-                k: v
-                for k, v in os.environ.items()
-                if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-            }
-            env.setdefault("PATH", "/home/jprotin/.local/bin:/usr/bin:/bin")
-            env["AGENT_AUDIT_LOG"] = audit_log
-            # RAG double-portée : MCP commun + projet (lecture qdrant-find).
-            rag_cfg, rag_tools = _rag_mcp(repo)
-            mcp_file = os.path.join(WORKROOT, f"{job_id}.mcp.json")
-            with open(mcp_file, "w", encoding="utf-8") as f:
-                json.dump(rag_cfg, f)
-            # build : Bash autorisé mais bypassPermissions + garde-fou hook (bloque même
-            #         en bypass) ; file : édition auto, pas de Bash.
-            perm_mode = "bypassPermissions" if mode == "build" else "acceptEdits"
-            cmd = [
-                CLAUDE,
-                "-p",
-                prompt,
-                "--model",
-                MODEL,
-                "--output-format",
-                "json",
-                "--permission-mode",
-                perm_mode,
-                "--max-turns",
-                str(MAXTURNS),
-                "--allowed-tools",
-                *ALLOWED_TOOLS.get(mode, ALLOWED_TOOLS["file"]),
-                *rag_tools,
-                "--disallowed-tools",
-                *DISALLOWED_TOOLS,
-                "--settings",
-                _guard_settings(),
-                "--mcp-config",
-                mcp_file,
-                "--strict-mcp-config",
-                "--append-system-prompt",
-                APPEND_SYSTEM_PROMPT,
-            ]
-            proc = subprocess.run(
-                cmd,
-                cwd=worktree,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    proc.stderr.strip() or f"claude exit {proc.returncode}"
-                )
-            result = json.loads(proc.stdout or "{}")
-            summary = result.get("result", "")
-
+            res = _run_claude_tools(worktree, repo, prompt, mode, job_id)
             _eject_bmad(worktree)  # retire les symlinks BMAD avant de committer
             _git(worktree, "add", "-A")
             changed = bool(_git(worktree, "status", "--porcelain"))
             if changed:
-                _git(
-                    worktree,
-                    "commit",
-                    "-m",
-                    f"agent({job_id}): {prompt[:60]}",
-                )
+                _git(worktree, "commit", "-m", f"agent({job_id}): {prompt[:60]}")
             diff_stat = _git(repo, "diff", "--stat", f"{base}..{branch}")
             files = _git(repo, "diff", "--name-status", f"{base}..{branch}")
-            audit = []
-            if os.path.exists(audit_log):
-                with open(audit_log, encoding="utf-8") as f:
-                    audit = [line.rstrip("\n") for line in f if line.strip()]
             _set(
                 job_id,
                 status="done",
@@ -335,11 +339,11 @@ def run_job(job_id, prompt, repo, mode="file"):
                 base=base,
                 changed=changed,
                 bmad=bmad,
-                summary=summary,
+                summary=res["summary"],
                 diff_stat=diff_stat,
                 files=files,
-                audit=audit,
-                cost_usd=result.get("total_cost_usd"),
+                audit=res["audit"],
+                cost_usd=res["cost_usd"],
             )
         except subprocess.TimeoutExpired:
             _set(job_id, status="error", error=f"timeout > {TIMEOUT}s", branch=branch)
@@ -352,6 +356,610 @@ def run_job(job_id, prompt, repo, mode="file"):
             except Exception:
                 pass
     _callback(job_id)
+
+
+# ============================================================================
+# Pipeline BMAD multi-persona / multi-LLM (Lot B — ADR 0004)
+# ----------------------------------------------------------------------------
+# Moteur de phases : chaque persona produit un artefact, le pipeline s'arrête aux
+# jalons (validation humaine) puis reprend. Routage LLM par phase : planning sur LLM
+# local (LiteLLM), architecte/dev/QA sur Claude (claude -p). B1 = analyst + PM (texte,
+# local) + 1er jalon ; B2/B3 ajouteront archi, epics/stories puis l'implémentation.
+# ============================================================================
+PIPELINES: dict[str, dict] = {}
+PIPELINES_LOCK = threading.Lock()
+
+# Modèle des personas de planning (local via LiteLLM). Défaut local-gemma (charge sur
+# la machine actuelle) ; passer à local-qwen quand la VRAM le permet (meilleure qualité).
+PLANNING_MODEL = os.environ.get("PIPELINE_PLANNING_MODEL", "local-gemma")
+
+PHASES = [
+    {
+        "key": "analyst",
+        "persona": "Analyste produit BMAD (Mary)",
+        "model": PLANNING_MODEL,
+        "kind": "text",
+        "artifact": "docs/brief.md",
+        "context": [],
+        "checkpoint": False,
+        "instruction": (
+            "Rédige un BRIEF PRODUIT concis en français (markdown). Sections : "
+            "Contexte & problème, Utilisateurs cibles, Objectifs, Périmètre pressenti, "
+            "Contraintes & risques. Factuel, sans remplissage."
+        ),
+    },
+    {
+        "key": "pm",
+        "persona": "Product Manager BMAD (John)",
+        "model": PLANNING_MODEL,
+        "kind": "text",
+        "artifact": "docs/prd.md",
+        "context": ["docs/brief.md"],
+        "checkpoint": True,
+        "instruction": (
+            "Rédige un PRD complet en français (markdown), commençant par "
+            "'# PRD — <titre>'. Sections : Contexte et problème, Objectifs (avec "
+            "indicateurs), Personas, Périmètre (MVP / hors-MVP), Exigences "
+            "fonctionnelles (table priorisée), Exigences non fonctionnelles, "
+            "Contraintes techniques, Critères d'acceptation, Risques."
+        ),
+    },
+    {
+        "key": "architect",
+        "persona": "Architecte BMAD (Winston)",
+        "model": "claude",  # raisonnement lourd -> Claude (claude -p, forfait)
+        "kind": "text",
+        "artifact": "docs/architecture.md",
+        "context": ["docs/prd.md"],
+        "checkpoint": True,
+        "instruction": (
+            "Rédige un document d'ARCHITECTURE en français (markdown), commençant par "
+            "'# Architecture — <titre>'. Sections : Vue d'ensemble, Choix techniques "
+            "(stack + justifications), Composants & responsabilités, Modèle de données "
+            "(si pertinent), Découpage en modules, Risques techniques & parades. "
+            "Reste cohérent avec le PRD."
+        ),
+    },
+    {
+        "key": "epics",
+        "persona": "Product Manager / Scrum Master BMAD",
+        "model": PLANNING_MODEL,
+        "kind": "epics",  # produit epics.md ; sprint-status.yaml dérivé (format bmad-ui)
+        "artifact": "_bmad-output/planning-artifacts/epics.md",
+        "context": ["docs/prd.md", "docs/architecture.md"],
+        "checkpoint": True,
+        "instruction": (
+            "Découpe le produit en EPICS et STORIES, en français (markdown), au format "
+            "STRICT suivant (respecté à la lettre, c'est parsé automatiquement) :\n"
+            "## Epic 1: <titre de l'epic>\n"
+            "<description courte de l'epic>\n"
+            "### Story 1.1: <titre de la story>\n"
+            "<critères d'acceptation en puces>\n"
+            "### Story 1.2: <titre>\n...\n"
+            "## Epic 2: <titre>\n...\n"
+            "Numérote les epics 1..N et les stories N.M en continu. 2 à 4 epics, "
+            "2 à 5 stories par epic. Titres courts et explicites."
+        ),
+    },
+    {
+        "key": "implementation",
+        "persona": "Développeur BMAD (dev-story)",
+        "model": "claude",  # code -> Claude (claude -p, forfait), AVEC outils
+        "kind": "implementation",  # boucle par story ; prompt construit dans _story_prompt
+        "artifact": None,
+        "context": ["docs/architecture.md", "_bmad-output/planning-artifacts/epics.md"],
+        "checkpoint": True,  # jalon final unique : revue humaine de la branche complète
+        "instruction": "",
+    },
+]
+
+
+def _set_pipe(pid, **kw):
+    with PIPELINES_LOCK:
+        PIPELINES[pid].update(kw)
+    _persist_pipe(pid)
+
+
+def _persist_pipe(pid):
+    """État persisté dans .ai-to-boost/pipeline.json (survit aux redémarrages)."""
+    with PIPELINES_LOCK:
+        state = dict(PIPELINES.get(pid, {}))
+    repo = state.get("repo")
+    if not repo:
+        return
+    try:
+        d = os.path.join(repo, ".ai-to-boost")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "pipeline.json"), "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"[pipe] persist {pid}: {exc}", flush=True)
+
+
+def _pipe_callback(pid):
+    if not CALLBACK_URL:
+        return
+    with PIPELINES_LOCK:
+        payload = dict(PIPELINES.get(pid, {}))
+    payload["kind"] = "pipeline"
+    try:
+        req = urllib.request.Request(
+            CALLBACK_URL,
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception as exc:
+        print(f"[pipe-callback] échec {pid}: {exc}", flush=True)
+
+
+def _llm_local(model, system, user, max_tokens=4000):
+    """Chat LiteLLM (modèle local). max_tokens élevé : local-gemma/qwen raisonnent —
+    un budget trop bas renvoie un contenu vide."""
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{LITELLM_URL}/v1/chat/completions",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LITELLM_KEY}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        data = json.loads(r.read())
+    msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
+    content = (msg.get("content") or "").strip()
+    if not content:
+        raise RuntimeError(f"réponse vide de {model} (raisonnement sans contenu ?)")
+    return content
+
+
+def _llm_claude_text(prompt):
+    """Persona Claude en mode TEXTE (sans outils) via claude -p forfait."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    }
+    cmd = [CLAUDE, "-p", prompt, "--model", MODEL, "--output-format", "json"]
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"claude exit {proc.returncode}")
+    return (json.loads(proc.stdout or "{}").get("result") or "").strip()
+
+
+def _persona_content(worktree, brief, phase, feedback=""):
+    """Construit le prompt (rôle + tâche + artefacts amont + feedback) et appelle la LLM
+    routée (local via LiteLLM, ou Claude via claude -p). Retourne le contenu markdown."""
+    ctx = ""
+    for rel in phase["context"]:
+        p = os.path.join(worktree, rel)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                ctx += f"\n\n## Artefact amont — {rel}\n{f.read()}"
+    system = (
+        f"Tu es {phase['persona']}, dans un pipeline automatisé sans interaction humaine. "
+        f"{phase['instruction']} Réponds UNIQUEMENT par le contenu markdown du document, "
+        "sans préambule ni commentaire."
+    )
+    user = f"# Besoin initial\n{brief}{ctx}"
+    if feedback:
+        user += f"\n\n## Retour à intégrer (révision)\n{feedback}"
+    model = phase["model"]
+    if model.startswith("local-"):
+        return _llm_local(model, system, user)
+    return _llm_claude_text(f"{system}\n\n{user}")
+
+
+def _write_commit(worktree, rels, key):
+    """Écrit déjà fait par l'appelant : add + commit des chemins donnés. Tolère un commit
+    vide (révision idempotente qui régénère un contenu identique) sans passer en erreur."""
+    for rel in rels:
+        _git(worktree, "add", rel)
+    # 'git diff --cached --quiet' sort 0 si rien n'est stagé (révision idempotente),
+    # 1 s'il y a des changements. Indépendant de la locale (vs parser le message git).
+    staged = subprocess.run(["git", "-C", worktree, "diff", "--cached", "--quiet"])
+    if staged.returncode == 0:
+        return
+    _git(worktree, "commit", "-m", f"pipeline({key}): {', '.join(rels)}")
+
+
+def _run_phase(worktree, brief, phase, feedback=""):
+    """Persona texte mono-artefact : génère, écrit, commit."""
+    content = _persona_content(worktree, brief, phase, feedback)
+    dest = os.path.join(worktree, phase["artifact"])
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(content if content.endswith("\n") else content + "\n")
+    _write_commit(worktree, [phase["artifact"]], phase["key"])
+    return phase["artifact"]
+
+
+def _slugify(text):
+    """Slug IDENTIQUE à slugifyStoryLabel de bmad-ui (parser.ts) : minuscules, puis
+    caractères hors [a-z0-9 -] SUPPRIMÉS — surtout PAS de translittération NFKD (bmad-ui
+    enlève les accents au lieu de les remplacer : 'créer' -> 'crer', pas 'creer'). Toute
+    divergence ici fige le statut des stories sur 'backlog' en B3. Voir mémoire/ADR 0004."""
+    text = re.sub(r"[^a-z0-9\s-]", "", text.lower())
+    text = re.sub(r"\s+", "-", text.strip())
+    text = re.sub(r"-+", "-", text)
+    return text or "story"
+
+
+def _parse_epics(md):
+    """Parse '## Epic N: Titre' + '### Story N.M: Titre' → [{n, title, stories:[{n,m,title}]}]."""
+    epics = []
+    cur = None
+    for line in md.splitlines():
+        m = re.match(r"^##\s+Epic\s+(\d+)\s*:\s*(.+)$", line.strip(), re.I)
+        if m:
+            cur = {"n": int(m.group(1)), "title": m.group(2).strip(), "stories": []}
+            epics.append(cur)
+            continue
+        s = re.match(r"^###\s+Story\s+(\d+)\.(\d+)\s*:\s*(.+)$", line.strip(), re.I)
+        if s and cur is not None:
+            cur["stories"].append(
+                {
+                    "n": int(s.group(1)),
+                    "m": int(s.group(2)),
+                    "title": s.group(3).strip(),
+                }
+            )
+    return epics
+
+
+def _project_name(worktree):
+    """Nom du projet depuis le marqueur .ai-to-boost du repo principal (gitignoré, donc
+    absent du worktree → on remonte via git-common-dir). Cosmétique (header sprint-status)."""
+    try:
+        common = _git(worktree, "rev-parse", "--git-common-dir")
+        if not os.path.isabs(common):
+            common = os.path.join(worktree, common)
+        repo = os.path.dirname(os.path.abspath(common))
+        with open(
+            os.path.join(repo, ".ai-to-boost", "config.json"), encoding="utf-8"
+        ) as f:
+            return (json.load(f) or {}).get("name") or os.path.basename(repo)
+    except Exception:
+        return "projet"
+
+
+def _gen_sprint_status(epics, project_name):
+    """Génère un sprint-status.yaml au format STRICT lu par bmad-ui (parser regex)."""
+    safe_name = " ".join(
+        str(project_name).split()
+    )  # aplatit \n/espaces (fichier strict)
+    lines = [
+        f"project: {safe_name}",
+        f"project_key: {_slugify(safe_name).upper()}",
+        "tracking_system: file-system",
+        'story_location: "_bmad-output/implementation-artifacts/stories"',
+        "",
+        "development_status:",
+    ]
+    for e in epics:
+        lines.append(f"  epic-{e['n']}: backlog")
+        for s in e["stories"]:
+            # numéro d'epic = epic PARENT (e['n']), pas s['n'] : un LLM qui numérote mal
+            # une story (Story 2.1 sous Epic 1) ne doit pas créer un epic-2 fantôme côté UI.
+            sid = f"{e['n']}-{s['m']}-{_slugify(s['title'])}"
+            lines.append(f"  {sid}: backlog")
+    return "\n".join(lines) + "\n"
+
+
+def _run_epics_phase(worktree, brief, phase, feedback=""):
+    """Persona epics : LLM produit epics.md (format canonique), sprint-status.yaml est
+    DÉRIVÉ programmatiquement (garantit le format strict + cohérence des slugs)."""
+    content = _persona_content(worktree, brief, phase, feedback)
+    epics = _parse_epics(content)
+    if not epics:
+        raise RuntimeError(
+            "epics.md généré sans '## Epic N:' parsable (board bmad-ui vide) — "
+            "relancer (ai2b revise) ou promouvoir la phase sur Claude"
+        )
+    epics_rel = phase["artifact"]
+    sprint_rel = "_bmad-output/implementation-artifacts/sprint-status.yaml"
+    name = _project_name(worktree)
+    for rel, data in (
+        (epics_rel, content if content.endswith("\n") else content + "\n"),
+        (sprint_rel, _gen_sprint_status(epics, name)),
+    ):
+        dest = os.path.join(worktree, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(data)
+    _write_commit(worktree, [epics_rel, sprint_rel], phase["key"])
+    n_stories = sum(len(e["stories"]) for e in epics)
+    return f"{epics_rel} (+sprint-status: {len(epics)} epics, {n_stories} stories)"
+
+
+SPRINT_REL = "_bmad-output/implementation-artifacts/sprint-status.yaml"
+IMPL_DIR = "_bmad-output/implementation-artifacts"
+# Statuts story bmad-ui, par rang croissant (override markdown forward-only côté UI).
+STORY_STATUSES = ("backlog", "ready-for-dev", "in-progress", "review", "done")
+# Ligne story du sprint-status.yaml : '  N-M-slug: statut' (les 'epic-N:' ne matchent pas).
+_STORY_LINE_RE = re.compile(r"^(\s+)(\d+-\d+-[a-z0-9-]+):\s*(\S+)\s*$")
+
+
+def _read_sprint_status(worktree):
+    """Lit sprint-status.yaml -> liste ordonnée [{id, status}] (stories uniquement)."""
+    path = os.path.join(worktree, SPRINT_REL)
+    stories = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = _STORY_LINE_RE.match(line.rstrip("\n"))
+            if m:
+                stories.append({"id": m.group(2), "status": m.group(3)})
+    return stories
+
+
+def _set_story_status(worktree, story_id, status):
+    """Réécrit la ligne 'N-M-slug: <status>' (préserve indentation + reste du fichier)."""
+    path = os.path.join(worktree, SPRINT_REL)
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines):
+        m = _STORY_LINE_RE.match(line.rstrip("\n"))
+        if m and m.group(2) == story_id:
+            lines[i] = f"{m.group(1)}{story_id}: {status}\n"
+            break
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+def _write_story_md(worktree, story_id, status, body):
+    """Fichier story lu par bmad-ui (override forward-only) : nom = id EXACT (N-M-slug.md),
+    ligne 'Status: <status>'. Retourne le chemin relatif."""
+    rel = f"{IMPL_DIR}/{story_id}.md"
+    dest = os.path.join(worktree, rel)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    body = (body or "").strip()
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(f"# Story {story_id}\n\nStatus: {status}\n\n{body}\n")
+    return rel
+
+
+def _story_prompt(brief, story, worktree, feedback=""):
+    """Prompt dev-story : persona + 1 story ciblée + archi/epics en contexte + auto-revue."""
+    n, m = story["id"].split("-")[:2]
+    ctx = ""
+    for rel in ("docs/architecture.md", "_bmad-output/planning-artifacts/epics.md"):
+        p = os.path.join(worktree, rel)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as fh:
+                ctx += f"\n\n## {rel}\n{fh.read()}"
+    prompt = (
+        "Tu es le Développeur BMAD (dev-story) d'un pipeline automatisé, sans interaction "
+        "humaine. Implémente UNIQUEMENT la story ci-dessous, en respectant l'architecture "
+        "et ses critères d'acceptation. Crée/édite les fichiers de code nécessaires dans le "
+        "répertoire courant.\n\n"
+        f"### Story à implémenter : {n}.{m} (id {story['id']})\n"
+        f"Retrouve son titre et ses critères d'acceptation sous '## Epic {n}' / "
+        f"'### Story {n}.{m}:' dans epics.md ci-dessous.\n\n"
+        "Contraintes STRICTES :\n"
+        "- N'implémente AUCUNE autre story que celle-ci.\n"
+        "- Ne modifie PAS les fichiers sous _bmad-output/ ni docs/ (gérés par le pipeline).\n"
+        "- AUTO-REVUE avant de terminer : relis ton code contre les critères d'acceptation "
+        "et corrige les écarts.\n"
+        "- Termine par un court résumé (3-5 lignes) de ce qui a été fait.\n"
+        f"\n# Besoin initial\n{brief}{ctx}"
+    )
+    if feedback:
+        prompt += f"\n\n## Retour à intégrer (révision)\n{feedback}"
+    return prompt
+
+
+def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
+    """Boucle dev-story dans le worktree pipeline (cumulatif) : chaque story non terminée
+    est implémentée via claude -p AVEC outils, statut maj dans sprint-status.yaml + fichier
+    story.md, 1 commit par story. Échec d'une story -> on la laisse en in-progress (rejouée
+    à la reprise) et on CONTINUE. En révision, on reprend toutes les stories non 'done'."""
+    stories = _read_sprint_status(worktree)
+    if feedback:
+        todo = [s for s in stories if s["status"] != "done"]
+    else:
+        todo = [s for s in stories if s["status"] not in ("review", "done")]
+    done, failed, total_cost = [], [], 0.0
+    for s in todo:
+        sid = s["id"]
+        try:
+            _set_story_status(worktree, sid, "in-progress")
+            _write_commit(worktree, [SPRINT_REL], f"story {sid} in-progress")
+            _inject_bmad(worktree)  # skills BMAD visibles pendant le dev
+            try:
+                res = _run_claude_tools(
+                    worktree,
+                    repo,
+                    _story_prompt(brief, s, worktree, feedback),
+                    "build",
+                    f"pl-{pid}-{sid}",
+                )
+            finally:
+                _eject_bmad(
+                    worktree
+                )  # avant tout commit (ne pas committer les symlinks)
+            _set_story_status(worktree, sid, "review")
+            _write_story_md(worktree, sid, "review", res.get("summary", ""))
+            _git(worktree, "add", "-A")
+            _git(worktree, "commit", "-m", f"pipeline(story {sid}): implémentation")
+            total_cost += res.get("cost_usd") or 0.0
+            done.append(sid)
+        except Exception as exc:
+            # Jette le travail partiel (timeout/erreur) mais garde le commit 'in-progress' :
+            # la story sera rejouée à la reprise. Le worktree pipeline est isolé.
+            try:
+                _git(worktree, "reset", "--hard", "HEAD", check=False)
+                _git(worktree, "clean", "-fd", check=False)
+            except Exception:
+                pass
+            failed.append({"id": sid, "error": str(exc)})
+        with PIPELINES_LOCK:
+            PIPELINES[pid].setdefault("stories", {})[sid] = (
+                "review" if sid in done else "error"
+            )
+    with PIPELINES_LOCK:
+        PIPELINES[pid]["impl_cost_usd"] = total_cost
+        PIPELINES[pid]["impl_failed"] = failed
+    if not todo:
+        return "implémentation : aucune story à traiter (déjà terminées)"
+    return (
+        f"implémentation : {len(done)}/{len(todo)} stories en review, "
+        f"{len(failed)} échec(s)"
+    )
+
+
+def _dispatch_phase(worktree, brief, phase, feedback="", repo=None, pid=None):
+    """Aiguille selon le type de phase : 'text', 'epics' ou 'implementation' (boucle dev)."""
+    if phase["kind"] == "text":
+        return _run_phase(worktree, brief, phase, feedback)
+    if phase["kind"] == "epics":
+        return _run_epics_phase(worktree, brief, phase, feedback)
+    if phase["kind"] == "implementation":
+        return _run_implementation_phase(worktree, repo, brief, phase, pid, feedback)
+    raise RuntimeError(f"phase '{phase['kind']}' non supportée")
+
+
+def _run_pipeline(pid):
+    """Exécute les phases depuis phase_index jusqu'au prochain jalon ou la fin."""
+    with RUN_LOCK:
+        with PIPELINES_LOCK:
+            st = dict(PIPELINES[pid])
+        worktree, brief = st["worktree"], st["prompt"]
+        try:
+            idx = st["phase_index"]
+            while idx < len(PHASES):
+                phase = PHASES[idx]
+                _set_pipe(pid, status="running", phase=phase["key"], phase_index=idx)
+                art = _dispatch_phase(worktree, brief, phase, repo=st["repo"], pid=pid)
+                with PIPELINES_LOCK:
+                    PIPELINES[pid].setdefault("artifacts", {})[phase["key"]] = art
+                if phase["checkpoint"]:
+                    _set_pipe(
+                        pid,
+                        status="awaiting_approval",
+                        checkpoint_index=idx,
+                        phase_index=idx + 1,
+                        awaiting=phase["key"],
+                        last_artifact=art,
+                    )
+                    _pipe_callback(pid)
+                    return
+                idx += 1
+            _finish_pipeline(pid, "done")
+        except Exception as exc:
+            _set_pipe(pid, status="error", error=str(exc))
+            _pipe_callback(pid)
+
+
+def _revise_pipeline(pid, feedback):
+    """Rejoue la phase en attente avec le retour humain, puis re-jalonne."""
+    with RUN_LOCK:
+        with PIPELINES_LOCK:
+            st = dict(PIPELINES[pid])
+        try:
+            idx = st["checkpoint_index"]
+            phase = PHASES[idx]
+            _set_pipe(pid, status="running", phase=phase["key"])
+            art = _dispatch_phase(
+                st["worktree"],
+                st["prompt"],
+                phase,
+                feedback=feedback,
+                repo=st["repo"],
+                pid=pid,
+            )
+            _set_pipe(
+                pid,
+                status="awaiting_approval",
+                awaiting=phase["key"],
+                last_artifact=art,
+            )
+            _pipe_callback(pid)
+        except Exception as exc:
+            _set_pipe(pid, status="error", error=str(exc))
+            _pipe_callback(pid)
+
+
+def _finish_pipeline(pid, status):
+    with PIPELINES_LOCK:
+        st = dict(PIPELINES[pid])
+    repo, worktree = st.get("repo"), st.get("worktree")
+    # Jalon final approuvé : les stories en 'review' (code produit + auto-revue) passent
+    # 'done' sur la branche pipeline avant de retirer le worktree (l'humain a validé).
+    if status == "done" and worktree and os.path.isdir(worktree):
+        try:
+            sprint = os.path.join(worktree, SPRINT_REL)
+            if os.path.isfile(sprint):
+                for s in _read_sprint_status(worktree):
+                    if s["status"] == "review":
+                        _set_story_status(worktree, s["id"], "done")
+                _write_commit(worktree, [SPRINT_REL], "stories done")
+        except Exception as exc:
+            print(f"[pipe] bump review->done {pid}: {exc}", flush=True)
+    if repo and worktree:
+        try:
+            _git(repo, "worktree", "remove", worktree, "--force", check=False)
+        except Exception:
+            pass
+    _set_pipe(pid, status=status)
+    _pipe_callback(pid)
+
+
+def start_pipeline(prompt, repo, return_target=None):
+    pid = uuid.uuid4().hex[:12]
+    branch = f"pipeline/{pid}"
+    worktree = os.path.join(WORKROOT, f"pl-{pid}")
+    base = _base_branch(repo)
+    _git(repo, "worktree", "add", worktree, "-b", branch, base)
+    with PIPELINES_LOCK:
+        PIPELINES[pid] = {
+            "pipeline_id": pid,
+            "status": "accepted",
+            "repo": repo,
+            "branch": branch,
+            "base": base,
+            "worktree": worktree,
+            "prompt": prompt,
+            "return_target": return_target,
+            "phase_index": 0,
+            "artifacts": {},
+        }
+    _persist_pipe(pid)
+    threading.Thread(target=_run_pipeline, args=(pid,), daemon=True).start()
+    return pid
+
+
+def resume_pipeline(pid, decision):
+    """decision : 'approve' | 'revise:<feedback>' | 'stop'."""
+    with PIPELINES_LOCK:
+        st = dict(PIPELINES.get(pid, {}))
+    if not st:
+        return {"error": "pipeline inconnu"}
+    if st.get("status") != "awaiting_approval":
+        return {"error": f"pipeline non en attente (status={st.get('status')})"}
+    if decision == "approve":
+        _set_pipe(pid, status="running")
+        threading.Thread(target=_run_pipeline, args=(pid,), daemon=True).start()
+    elif decision.startswith("revise:"):
+        fb = decision[len("revise:") :].strip()
+        threading.Thread(target=_revise_pipeline, args=(pid, fb), daemon=True).start()
+    elif decision == "stop":
+        _finish_pipeline(pid, "stopped")
+    else:
+        return {"error": f"décision invalide: {decision}"}
+    return {"pipeline_id": pid, "status": "resuming", "decision": decision}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -385,18 +993,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, job)
             return
+        if self.path.startswith("/pipelines/"):
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            pid = self.path.split("/pipelines/", 1)[1].strip("/")
+            with PIPELINES_LOCK:
+                st = PIPELINES.get(pid)
+            self._send(200, st) if st else self._send(
+                404, {"error": "pipeline inconnu"}
+            )
+            return
         self._send(404, {"error": "not found"})
 
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        return json.loads(self.rfile.read(length) or b"{}")
+
     def do_POST(self):
-        if self.path != "/jobs":
-            self._send(404, {"error": "not found"})
-            return
         if not self._auth_ok():
             self._send(401, {"error": "unauthorized"})
             return
+        if self.path == "/jobs":
+            self._post_job()
+        elif self.path == "/pipelines":
+            self._post_pipeline()
+        elif self.path.startswith("/pipelines/") and self.path.endswith("/resume"):
+            self._post_resume()
+        else:
+            self._send(404, {"error": "not found"})
+
+    def _post_job(self):
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            data = json.loads(self.rfile.read(length) or b"{}")
+            data = self._read_json()
         except Exception as exc:
             self._send(400, {"error": f"bad json: {exc}"})
             return
@@ -423,6 +1052,35 @@ class Handler(BaseHTTPRequestHandler):
             target=run_job, args=(job_id, prompt, repo, mode), daemon=True
         ).start()
         self._send(202, {"job_id": job_id, "status": "accepted"})
+
+    def _post_pipeline(self):
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            self._send(400, {"error": "missing 'prompt'"})
+            return
+        try:
+            repo = _validate_repo(data.get("repo") or DEFAULT_REPO)
+        except ValueError as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        pid = start_pipeline(prompt, repo, data.get("return_target"))
+        self._send(202, {"pipeline_id": pid, "status": "accepted"})
+
+    def _post_resume(self):
+        pid = self.path.split("/pipelines/", 1)[1].rsplit("/resume", 1)[0].strip("/")
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        decision = (data.get("decision") or "").strip()
+        res = resume_pipeline(pid, decision)
+        self._send(400 if res.get("error") else 202, res)
 
 
 def main():

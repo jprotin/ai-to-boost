@@ -7,6 +7,13 @@ versionnage [SemVer](https://semver.org/).
 
 ### Ajouté
 
+- **Pipeline BMAD multi-persona / multi-LLM — B1** (ADR 0004) : le worker expose un moteur
+  de pipeline (endpoints `POST /pipelines`, `GET /pipelines/<id>`, `POST /pipelines/<id>/resume`)
+  qui déroule les personas BMAD avec jalons de validation, en plus de `/jobs` (one-shot,
+  inchangé). B1 = phases _analyst_ + _PM_ (texte) sur **LLM local** (LiteLLM, défaut
+  `local-gemma`) → `docs/brief.md` + `docs/prd.md`, puis **1er jalon**. État persisté dans
+  `.ai-to-boost/pipeline.json` ; branche/worktree dédiés `pipeline/<id>`. CLI : `ai2b run`,
+  `pipeline`, `approve`, `revise`, `stop`. Architecte/dev/QA (Claude) viennent en B2/B3.
 - **`ai2b` — tour de contrôle (CLI central)** : `scripts/ai2b.sh` centralise la gestion
   d'ai-to-boost et des projets pilotés. Cycle de vie projet (`new`/`init`/`switch`/`ls`/
   `current`/`rm`), services (`status`/`up`/`down`/`restart`/`logs`), vie du projet actif
