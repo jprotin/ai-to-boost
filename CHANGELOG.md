@@ -7,6 +7,13 @@ versionnage [SemVer](https://semver.org/).
 
 ### Ajouté
 
+- **`ai2b` — tour de contrôle (CLI central)** : `scripts/ai2b.sh` centralise la gestion
+  d'ai-to-boost et des projets pilotés. Cycle de vie projet (`new`/`init`/`switch`/`ls`/
+  `current`/`rm`), services (`status`/`up`/`down`/`restart`/`logs`), vie du projet actif
+  (`build`/`code`/`job`/`ui`). Registre `~/.config/ai-to-boost/projects.json` avec notion de
+  **projet actif** (remplace l'édition manuelle de `AGENT_DEFAULT_REPO` + restart). `new`
+  enchaîne `git init` + GitFlow + init BMAD + commit du `.gitignore` (corrige le conflit de
+  checkout des branches `agent/*`). Voir `docs/runbooks/ai2b.md`.
 - **BMAD en interactif par projet** : `ai-to-boost-init.sh` expose désormais BMAD
   (symlinks `_bmad/` + `.claude/skills/bmad-*` vers le partagé `~/agent-workspace/.bmad-shared`)
   dans le projet cible. Les skills `/bmad-help`, `/bmad-prd`, … deviennent disponibles en
