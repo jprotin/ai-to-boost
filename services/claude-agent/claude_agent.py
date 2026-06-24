@@ -248,10 +248,72 @@ def _guard_settings():
     )
 
 
+def _run_claude_tools(worktree, repo, prompt, mode, tag):
+    """Cœur d'appel `claude -p` AVEC outils (Read/Edit/Write[/Bash]) sous garde-fou + RAG,
+    dans un worktree donné. NE gère NI le worktree, NI BMAD, NI le commit, NI RUN_LOCK :
+    l'appelant s'en charge (réutilisé par run_job one-shot ET la boucle dev-story du
+    pipeline). Retourne {summary, cost_usd, audit}. Lève en cas d'échec claude."""
+    audit_log = os.path.join(WORKROOT, f"{tag}.audit.log")
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    }
+    env.setdefault("PATH", "/home/jprotin/.local/bin:/usr/bin:/bin")
+    env["AGENT_AUDIT_LOG"] = audit_log
+    # RAG double-portée : MCP commun + projet (lecture qdrant-find).
+    rag_cfg, rag_tools = _rag_mcp(repo)
+    mcp_file = os.path.join(WORKROOT, f"{tag}.mcp.json")
+    with open(mcp_file, "w", encoding="utf-8") as f:
+        json.dump(rag_cfg, f)
+    # build : Bash autorisé mais bypassPermissions + garde-fou hook (bloque même
+    #         en bypass) ; file : édition auto, pas de Bash.
+    perm_mode = "bypassPermissions" if mode == "build" else "acceptEdits"
+    cmd = [
+        CLAUDE,
+        "-p",
+        prompt,
+        "--model",
+        MODEL,
+        "--output-format",
+        "json",
+        "--permission-mode",
+        perm_mode,
+        "--max-turns",
+        str(MAXTURNS),
+        "--allowed-tools",
+        *ALLOWED_TOOLS.get(mode, ALLOWED_TOOLS["file"]),
+        *rag_tools,
+        "--disallowed-tools",
+        *DISALLOWED_TOOLS,
+        "--settings",
+        _guard_settings(),
+        "--mcp-config",
+        mcp_file,
+        "--strict-mcp-config",
+        "--append-system-prompt",
+        APPEND_SYSTEM_PROMPT,
+    ]
+    proc = subprocess.run(
+        cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=TIMEOUT
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"claude exit {proc.returncode}")
+    result = json.loads(proc.stdout or "{}")
+    audit = []
+    if os.path.exists(audit_log):
+        with open(audit_log, encoding="utf-8") as f:
+            audit = [line.rstrip("\n") for line in f if line.strip()]
+    return {
+        "summary": result.get("result", ""),
+        "cost_usd": result.get("total_cost_usd"),
+        "audit": audit,
+    }
+
+
 def run_job(job_id, prompt, repo, mode="file"):
     branch = f"agent/{job_id}"
     worktree = os.path.join(WORKROOT, job_id)
-    audit_log = os.path.join(WORKROOT, f"{job_id}.audit.log")
     with RUN_LOCK:
         _set(job_id, status="running")
         try:
@@ -262,77 +324,14 @@ def run_job(job_id, prompt, repo, mode="file"):
             return
         bmad = _inject_bmad(worktree)
         try:
-            env = {
-                k: v
-                for k, v in os.environ.items()
-                if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
-            }
-            env.setdefault("PATH", "/home/jprotin/.local/bin:/usr/bin:/bin")
-            env["AGENT_AUDIT_LOG"] = audit_log
-            # RAG double-portée : MCP commun + projet (lecture qdrant-find).
-            rag_cfg, rag_tools = _rag_mcp(repo)
-            mcp_file = os.path.join(WORKROOT, f"{job_id}.mcp.json")
-            with open(mcp_file, "w", encoding="utf-8") as f:
-                json.dump(rag_cfg, f)
-            # build : Bash autorisé mais bypassPermissions + garde-fou hook (bloque même
-            #         en bypass) ; file : édition auto, pas de Bash.
-            perm_mode = "bypassPermissions" if mode == "build" else "acceptEdits"
-            cmd = [
-                CLAUDE,
-                "-p",
-                prompt,
-                "--model",
-                MODEL,
-                "--output-format",
-                "json",
-                "--permission-mode",
-                perm_mode,
-                "--max-turns",
-                str(MAXTURNS),
-                "--allowed-tools",
-                *ALLOWED_TOOLS.get(mode, ALLOWED_TOOLS["file"]),
-                *rag_tools,
-                "--disallowed-tools",
-                *DISALLOWED_TOOLS,
-                "--settings",
-                _guard_settings(),
-                "--mcp-config",
-                mcp_file,
-                "--strict-mcp-config",
-                "--append-system-prompt",
-                APPEND_SYSTEM_PROMPT,
-            ]
-            proc = subprocess.run(
-                cmd,
-                cwd=worktree,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=TIMEOUT,
-            )
-            if proc.returncode != 0:
-                raise RuntimeError(
-                    proc.stderr.strip() or f"claude exit {proc.returncode}"
-                )
-            result = json.loads(proc.stdout or "{}")
-            summary = result.get("result", "")
-
+            res = _run_claude_tools(worktree, repo, prompt, mode, job_id)
             _eject_bmad(worktree)  # retire les symlinks BMAD avant de committer
             _git(worktree, "add", "-A")
             changed = bool(_git(worktree, "status", "--porcelain"))
             if changed:
-                _git(
-                    worktree,
-                    "commit",
-                    "-m",
-                    f"agent({job_id}): {prompt[:60]}",
-                )
+                _git(worktree, "commit", "-m", f"agent({job_id}): {prompt[:60]}")
             diff_stat = _git(repo, "diff", "--stat", f"{base}..{branch}")
             files = _git(repo, "diff", "--name-status", f"{base}..{branch}")
-            audit = []
-            if os.path.exists(audit_log):
-                with open(audit_log, encoding="utf-8") as f:
-                    audit = [line.rstrip("\n") for line in f if line.strip()]
             _set(
                 job_id,
                 status="done",
@@ -340,11 +339,11 @@ def run_job(job_id, prompt, repo, mode="file"):
                 base=base,
                 changed=changed,
                 bmad=bmad,
-                summary=summary,
+                summary=res["summary"],
                 diff_stat=diff_stat,
                 files=files,
-                audit=audit,
-                cost_usd=result.get("total_cost_usd"),
+                audit=res["audit"],
+                cost_usd=res["cost_usd"],
             )
         except subprocess.TimeoutExpired:
             _set(job_id, status="error", error=f"timeout > {TIMEOUT}s", branch=branch)
@@ -441,6 +440,16 @@ PHASES = [
             "Numérote les epics 1..N et les stories N.M en continu. 2 à 4 epics, "
             "2 à 5 stories par epic. Titres courts et explicites."
         ),
+    },
+    {
+        "key": "implementation",
+        "persona": "Développeur BMAD (dev-story)",
+        "model": "claude",  # code -> Claude (claude -p, forfait), AVEC outils
+        "kind": "implementation",  # boucle par story ; prompt construit dans _story_prompt
+        "artifact": None,
+        "context": ["docs/architecture.md", "_bmad-output/planning-artifacts/epics.md"],
+        "checkpoint": True,  # jalon final unique : revue humaine de la branche complète
+        "instruction": "",
     },
 ]
 
@@ -676,15 +685,150 @@ def _run_epics_phase(worktree, brief, phase, feedback=""):
     return f"{epics_rel} (+sprint-status: {len(epics)} epics, {n_stories} stories)"
 
 
-def _dispatch_phase(worktree, brief, phase, feedback=""):
-    """Aiguille selon le type de phase : 'text' (mono-artefact) ou 'epics' (epics + sprint)."""
+SPRINT_REL = "_bmad-output/implementation-artifacts/sprint-status.yaml"
+IMPL_DIR = "_bmad-output/implementation-artifacts"
+# Statuts story bmad-ui, par rang croissant (override markdown forward-only côté UI).
+STORY_STATUSES = ("backlog", "ready-for-dev", "in-progress", "review", "done")
+# Ligne story du sprint-status.yaml : '  N-M-slug: statut' (les 'epic-N:' ne matchent pas).
+_STORY_LINE_RE = re.compile(r"^(\s+)(\d+-\d+-[a-z0-9-]+):\s*(\S+)\s*$")
+
+
+def _read_sprint_status(worktree):
+    """Lit sprint-status.yaml -> liste ordonnée [{id, status}] (stories uniquement)."""
+    path = os.path.join(worktree, SPRINT_REL)
+    stories = []
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            m = _STORY_LINE_RE.match(line.rstrip("\n"))
+            if m:
+                stories.append({"id": m.group(2), "status": m.group(3)})
+    return stories
+
+
+def _set_story_status(worktree, story_id, status):
+    """Réécrit la ligne 'N-M-slug: <status>' (préserve indentation + reste du fichier)."""
+    path = os.path.join(worktree, SPRINT_REL)
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines):
+        m = _STORY_LINE_RE.match(line.rstrip("\n"))
+        if m and m.group(2) == story_id:
+            lines[i] = f"{m.group(1)}{story_id}: {status}\n"
+            break
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+
+
+def _write_story_md(worktree, story_id, status, body):
+    """Fichier story lu par bmad-ui (override forward-only) : nom = id EXACT (N-M-slug.md),
+    ligne 'Status: <status>'. Retourne le chemin relatif."""
+    rel = f"{IMPL_DIR}/{story_id}.md"
+    dest = os.path.join(worktree, rel)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    body = (body or "").strip()
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(f"# Story {story_id}\n\nStatus: {status}\n\n{body}\n")
+    return rel
+
+
+def _story_prompt(brief, story, worktree, feedback=""):
+    """Prompt dev-story : persona + 1 story ciblée + archi/epics en contexte + auto-revue."""
+    n, m = story["id"].split("-")[:2]
+    ctx = ""
+    for rel in ("docs/architecture.md", "_bmad-output/planning-artifacts/epics.md"):
+        p = os.path.join(worktree, rel)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as fh:
+                ctx += f"\n\n## {rel}\n{fh.read()}"
+    prompt = (
+        "Tu es le Développeur BMAD (dev-story) d'un pipeline automatisé, sans interaction "
+        "humaine. Implémente UNIQUEMENT la story ci-dessous, en respectant l'architecture "
+        "et ses critères d'acceptation. Crée/édite les fichiers de code nécessaires dans le "
+        "répertoire courant.\n\n"
+        f"### Story à implémenter : {n}.{m} (id {story['id']})\n"
+        f"Retrouve son titre et ses critères d'acceptation sous '## Epic {n}' / "
+        f"'### Story {n}.{m}:' dans epics.md ci-dessous.\n\n"
+        "Contraintes STRICTES :\n"
+        "- N'implémente AUCUNE autre story que celle-ci.\n"
+        "- Ne modifie PAS les fichiers sous _bmad-output/ ni docs/ (gérés par le pipeline).\n"
+        "- AUTO-REVUE avant de terminer : relis ton code contre les critères d'acceptation "
+        "et corrige les écarts.\n"
+        "- Termine par un court résumé (3-5 lignes) de ce qui a été fait.\n"
+        f"\n# Besoin initial\n{brief}{ctx}"
+    )
+    if feedback:
+        prompt += f"\n\n## Retour à intégrer (révision)\n{feedback}"
+    return prompt
+
+
+def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
+    """Boucle dev-story dans le worktree pipeline (cumulatif) : chaque story non terminée
+    est implémentée via claude -p AVEC outils, statut maj dans sprint-status.yaml + fichier
+    story.md, 1 commit par story. Échec d'une story -> on la laisse en in-progress (rejouée
+    à la reprise) et on CONTINUE. En révision, on reprend toutes les stories non 'done'."""
+    stories = _read_sprint_status(worktree)
+    if feedback:
+        todo = [s for s in stories if s["status"] != "done"]
+    else:
+        todo = [s for s in stories if s["status"] not in ("review", "done")]
+    done, failed, total_cost = [], [], 0.0
+    for s in todo:
+        sid = s["id"]
+        try:
+            _set_story_status(worktree, sid, "in-progress")
+            _write_commit(worktree, [SPRINT_REL], f"story {sid} in-progress")
+            _inject_bmad(worktree)  # skills BMAD visibles pendant le dev
+            try:
+                res = _run_claude_tools(
+                    worktree,
+                    repo,
+                    _story_prompt(brief, s, worktree, feedback),
+                    "build",
+                    f"pl-{pid}-{sid}",
+                )
+            finally:
+                _eject_bmad(
+                    worktree
+                )  # avant tout commit (ne pas committer les symlinks)
+            _set_story_status(worktree, sid, "review")
+            _write_story_md(worktree, sid, "review", res.get("summary", ""))
+            _git(worktree, "add", "-A")
+            _git(worktree, "commit", "-m", f"pipeline(story {sid}): implémentation")
+            total_cost += res.get("cost_usd") or 0.0
+            done.append(sid)
+        except Exception as exc:
+            # Jette le travail partiel (timeout/erreur) mais garde le commit 'in-progress' :
+            # la story sera rejouée à la reprise. Le worktree pipeline est isolé.
+            try:
+                _git(worktree, "reset", "--hard", "HEAD", check=False)
+                _git(worktree, "clean", "-fd", check=False)
+            except Exception:
+                pass
+            failed.append({"id": sid, "error": str(exc)})
+        with PIPELINES_LOCK:
+            PIPELINES[pid].setdefault("stories", {})[sid] = (
+                "review" if sid in done else "error"
+            )
+    with PIPELINES_LOCK:
+        PIPELINES[pid]["impl_cost_usd"] = total_cost
+        PIPELINES[pid]["impl_failed"] = failed
+    if not todo:
+        return "implémentation : aucune story à traiter (déjà terminées)"
+    return (
+        f"implémentation : {len(done)}/{len(todo)} stories en review, "
+        f"{len(failed)} échec(s)"
+    )
+
+
+def _dispatch_phase(worktree, brief, phase, feedback="", repo=None, pid=None):
+    """Aiguille selon le type de phase : 'text', 'epics' ou 'implementation' (boucle dev)."""
     if phase["kind"] == "text":
         return _run_phase(worktree, brief, phase, feedback)
     if phase["kind"] == "epics":
         return _run_epics_phase(worktree, brief, phase, feedback)
-    raise RuntimeError(
-        f"phase '{phase['kind']}' non supportée (B3 : dev-story à venir)"
-    )
+    if phase["kind"] == "implementation":
+        return _run_implementation_phase(worktree, repo, brief, phase, pid, feedback)
+    raise RuntimeError(f"phase '{phase['kind']}' non supportée")
 
 
 def _run_pipeline(pid):
@@ -698,7 +842,7 @@ def _run_pipeline(pid):
             while idx < len(PHASES):
                 phase = PHASES[idx]
                 _set_pipe(pid, status="running", phase=phase["key"], phase_index=idx)
-                art = _dispatch_phase(worktree, brief, phase)
+                art = _dispatch_phase(worktree, brief, phase, repo=st["repo"], pid=pid)
                 with PIPELINES_LOCK:
                     PIPELINES[pid].setdefault("artifacts", {})[phase["key"]] = art
                 if phase["checkpoint"]:
@@ -729,7 +873,12 @@ def _revise_pipeline(pid, feedback):
             phase = PHASES[idx]
             _set_pipe(pid, status="running", phase=phase["key"])
             art = _dispatch_phase(
-                st["worktree"], st["prompt"], phase, feedback=feedback
+                st["worktree"],
+                st["prompt"],
+                phase,
+                feedback=feedback,
+                repo=st["repo"],
+                pid=pid,
             )
             _set_pipe(
                 pid,
@@ -747,6 +896,18 @@ def _finish_pipeline(pid, status):
     with PIPELINES_LOCK:
         st = dict(PIPELINES[pid])
     repo, worktree = st.get("repo"), st.get("worktree")
+    # Jalon final approuvé : les stories en 'review' (code produit + auto-revue) passent
+    # 'done' sur la branche pipeline avant de retirer le worktree (l'humain a validé).
+    if status == "done" and worktree and os.path.isdir(worktree):
+        try:
+            sprint = os.path.join(worktree, SPRINT_REL)
+            if os.path.isfile(sprint):
+                for s in _read_sprint_status(worktree):
+                    if s["status"] == "review":
+                        _set_story_status(worktree, s["id"], "done")
+                _write_commit(worktree, [SPRINT_REL], "stories done")
+        except Exception as exc:
+            print(f"[pipe] bump review->done {pid}: {exc}", flush=True)
     if repo and worktree:
         try:
             _git(repo, "worktree", "remove", worktree, "--force", check=False)

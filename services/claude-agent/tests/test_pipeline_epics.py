@@ -10,6 +10,7 @@ import importlib.util
 import os
 import re
 import sys
+import tempfile
 
 _HERE = os.path.dirname(os.path.abspath(__file__))
 _MODULE = os.path.join(_HERE, "..", "claude_agent.py")
@@ -29,6 +30,25 @@ EPIC_STATUS_RE = re.compile(r"^\s+epic-\d+:\s*(backlog|in-progress|done)\s*$")
 STORY_STATUS_RE = re.compile(
     r"^\s+\d+-\d+-[a-z0-9-]+:\s*" r"(backlog|ready-for-dev|in-progress|review|done)\s*$"
 )
+# Override markdown bmad-ui (summarize.ts STORY_MARKDOWN_STATUS_REGEX) : ligne 'Status: ...'.
+STORY_MD_STATUS_RE = re.compile(
+    r"^Status:\s*(backlog|ready-for-dev|in-progress|review|done)\s*$",
+    re.I | re.M,
+)
+
+
+def _seed_worktree():
+    """Crée un worktree jetable avec un sprint-status.yaml représentatif."""
+    wt = tempfile.mkdtemp(prefix="pl-test-")
+    epics = m._parse_epics(
+        "## Epic 1: Auth\n### Story 1.1: Créer un compte\n### Story 1.2: Se connecter\n"
+        "## Epic 2: Profil\n### Story 2.1: Voir son profil\n"
+    )
+    dest = os.path.join(wt, m.SPRINT_REL)
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(m._gen_sprint_status(epics, "Demo"))
+    return wt
 
 
 def test_slug_matches_bmad_ui():
@@ -98,6 +118,57 @@ def test_nom_projet_avec_newline_neutralise():
     yaml = m._gen_sprint_status([], "Projet\n  epic-9: done")
     assert yaml.splitlines()[0] == "project: Projet epic-9: done"
     assert "  epic-9: done" not in yaml.splitlines()
+
+
+def test_read_sprint_status_ordonne_et_ignore_epics():
+    wt = _seed_worktree()
+    stories = m._read_sprint_status(wt)
+    ids = [s["id"] for s in stories]
+    assert ids == [
+        "1-1-crer-un-compte",
+        "1-2-se-connecter",
+        "2-1-voir-son-profil",
+    ], ids
+    assert all(s["status"] == "backlog" for s in stories)
+    assert all("epic-" not in s["id"] for s in stories)  # lignes epic non incluses
+
+
+def test_set_story_status_cible_et_preserve():
+    wt = _seed_worktree()
+    m._set_story_status(wt, "1-2-se-connecter", "review")
+    statuses = {s["id"]: s["status"] for s in m._read_sprint_status(wt)}
+    assert statuses["1-2-se-connecter"] == "review"
+    assert statuses["1-1-crer-un-compte"] == "backlog"  # autres lignes intactes
+    # le fichier reste conforme aux regex bmad-ui après réécriture
+    with open(os.path.join(wt, m.SPRINT_REL), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    epic_lines = [ln for ln in lines if ln.strip().startswith("epic-")]
+    story_lines = [ln for ln in lines if re.match(r"^\s+\d+-\d+-", ln)]
+    assert epic_lines and all(EPIC_STATUS_RE.match(ln) for ln in epic_lines)
+    assert story_lines and all(STORY_STATUS_RE.match(ln) for ln in story_lines)
+
+
+def test_skip_des_stories_terminees():
+    """La boucle (sans feedback) ne reprend ni 'review' ni 'done'."""
+    wt = _seed_worktree()
+    m._set_story_status(wt, "1-1-crer-un-compte", "done")
+    m._set_story_status(wt, "1-2-se-connecter", "review")
+    stories = m._read_sprint_status(wt)
+    todo = [s["id"] for s in stories if s["status"] not in ("review", "done")]
+    assert todo == ["2-1-voir-son-profil"], todo
+    # en révision (avec feedback) : tout sauf 'done' est repris
+    todo_revise = [s["id"] for s in stories if s["status"] != "done"]
+    assert todo_revise == ["1-2-se-connecter", "2-1-voir-son-profil"], todo_revise
+
+
+def test_write_story_md_nom_exact_et_status():
+    wt = _seed_worktree()
+    rel = m._write_story_md(wt, "2-1-voir-son-profil", "review", "Résumé du dev.")
+    assert rel == "_bmad-output/implementation-artifacts/2-1-voir-son-profil.md"
+    with open(os.path.join(wt, rel), encoding="utf-8") as f:
+        content = f.read()
+    mt = STORY_MD_STATUS_RE.search(content)  # bmad-ui doit y lire le statut
+    assert mt and mt.group(1) == "review", content
 
 
 def main():
