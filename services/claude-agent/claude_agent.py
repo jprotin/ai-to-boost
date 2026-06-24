@@ -405,6 +405,43 @@ PHASES = [
             "Contraintes techniques, Critères d'acceptation, Risques."
         ),
     },
+    {
+        "key": "architect",
+        "persona": "Architecte BMAD (Winston)",
+        "model": "claude",  # raisonnement lourd -> Claude (claude -p, forfait)
+        "kind": "text",
+        "artifact": "docs/architecture.md",
+        "context": ["docs/prd.md"],
+        "checkpoint": True,
+        "instruction": (
+            "Rédige un document d'ARCHITECTURE en français (markdown), commençant par "
+            "'# Architecture — <titre>'. Sections : Vue d'ensemble, Choix techniques "
+            "(stack + justifications), Composants & responsabilités, Modèle de données "
+            "(si pertinent), Découpage en modules, Risques techniques & parades. "
+            "Reste cohérent avec le PRD."
+        ),
+    },
+    {
+        "key": "epics",
+        "persona": "Product Manager / Scrum Master BMAD",
+        "model": PLANNING_MODEL,
+        "kind": "epics",  # produit epics.md ; sprint-status.yaml dérivé (format bmad-ui)
+        "artifact": "_bmad-output/planning-artifacts/epics.md",
+        "context": ["docs/prd.md", "docs/architecture.md"],
+        "checkpoint": True,
+        "instruction": (
+            "Découpe le produit en EPICS et STORIES, en français (markdown), au format "
+            "STRICT suivant (respecté à la lettre, c'est parsé automatiquement) :\n"
+            "## Epic 1: <titre de l'epic>\n"
+            "<description courte de l'epic>\n"
+            "### Story 1.1: <titre de la story>\n"
+            "<critères d'acceptation en puces>\n"
+            "### Story 1.2: <titre>\n...\n"
+            "## Epic 2: <titre>\n...\n"
+            "Numérote les epics 1..N et les stories N.M en continu. 2 à 4 epics, "
+            "2 à 5 stories par epic. Titres courts et explicites."
+        ),
+    },
 ]
 
 
@@ -494,8 +531,9 @@ def _llm_claude_text(prompt):
     return (json.loads(proc.stdout or "{}").get("result") or "").strip()
 
 
-def _run_phase(worktree, brief, phase, feedback=""):
-    """Persona texte : prompt = rôle + tâche + artefacts amont (+ feedback), écrit + commit."""
+def _persona_content(worktree, brief, phase, feedback=""):
+    """Construit le prompt (rôle + tâche + artefacts amont + feedback) et appelle la LLM
+    routée (local via LiteLLM, ou Claude via claude -p). Retourne le contenu markdown."""
     ctx = ""
     for rel in phase["context"]:
         p = os.path.join(worktree, rel)
@@ -511,18 +549,142 @@ def _run_phase(worktree, brief, phase, feedback=""):
     if feedback:
         user += f"\n\n## Retour à intégrer (révision)\n{feedback}"
     model = phase["model"]
-    content = (
-        _llm_local(model, system, user)
-        if model.startswith("local-")
-        else _llm_claude_text(f"{system}\n\n{user}")
-    )
+    if model.startswith("local-"):
+        return _llm_local(model, system, user)
+    return _llm_claude_text(f"{system}\n\n{user}")
+
+
+def _write_commit(worktree, rels, key):
+    """Écrit déjà fait par l'appelant : add + commit des chemins donnés. Tolère un commit
+    vide (révision idempotente qui régénère un contenu identique) sans passer en erreur."""
+    for rel in rels:
+        _git(worktree, "add", rel)
+    # 'git diff --cached --quiet' sort 0 si rien n'est stagé (révision idempotente),
+    # 1 s'il y a des changements. Indépendant de la locale (vs parser le message git).
+    staged = subprocess.run(["git", "-C", worktree, "diff", "--cached", "--quiet"])
+    if staged.returncode == 0:
+        return
+    _git(worktree, "commit", "-m", f"pipeline({key}): {', '.join(rels)}")
+
+
+def _run_phase(worktree, brief, phase, feedback=""):
+    """Persona texte mono-artefact : génère, écrit, commit."""
+    content = _persona_content(worktree, brief, phase, feedback)
     dest = os.path.join(worktree, phase["artifact"])
     os.makedirs(os.path.dirname(dest), exist_ok=True)
     with open(dest, "w", encoding="utf-8") as f:
         f.write(content if content.endswith("\n") else content + "\n")
-    _git(worktree, "add", phase["artifact"])
-    _git(worktree, "commit", "-m", f"pipeline({phase['key']}): {phase['artifact']}")
+    _write_commit(worktree, [phase["artifact"]], phase["key"])
     return phase["artifact"]
+
+
+def _slugify(text):
+    """Slug IDENTIQUE à slugifyStoryLabel de bmad-ui (parser.ts) : minuscules, puis
+    caractères hors [a-z0-9 -] SUPPRIMÉS — surtout PAS de translittération NFKD (bmad-ui
+    enlève les accents au lieu de les remplacer : 'créer' -> 'crer', pas 'creer'). Toute
+    divergence ici fige le statut des stories sur 'backlog' en B3. Voir mémoire/ADR 0004."""
+    text = re.sub(r"[^a-z0-9\s-]", "", text.lower())
+    text = re.sub(r"\s+", "-", text.strip())
+    text = re.sub(r"-+", "-", text)
+    return text or "story"
+
+
+def _parse_epics(md):
+    """Parse '## Epic N: Titre' + '### Story N.M: Titre' → [{n, title, stories:[{n,m,title}]}]."""
+    epics = []
+    cur = None
+    for line in md.splitlines():
+        m = re.match(r"^##\s+Epic\s+(\d+)\s*:\s*(.+)$", line.strip(), re.I)
+        if m:
+            cur = {"n": int(m.group(1)), "title": m.group(2).strip(), "stories": []}
+            epics.append(cur)
+            continue
+        s = re.match(r"^###\s+Story\s+(\d+)\.(\d+)\s*:\s*(.+)$", line.strip(), re.I)
+        if s and cur is not None:
+            cur["stories"].append(
+                {
+                    "n": int(s.group(1)),
+                    "m": int(s.group(2)),
+                    "title": s.group(3).strip(),
+                }
+            )
+    return epics
+
+
+def _project_name(worktree):
+    """Nom du projet depuis le marqueur .ai-to-boost du repo principal (gitignoré, donc
+    absent du worktree → on remonte via git-common-dir). Cosmétique (header sprint-status)."""
+    try:
+        common = _git(worktree, "rev-parse", "--git-common-dir")
+        if not os.path.isabs(common):
+            common = os.path.join(worktree, common)
+        repo = os.path.dirname(os.path.abspath(common))
+        with open(
+            os.path.join(repo, ".ai-to-boost", "config.json"), encoding="utf-8"
+        ) as f:
+            return (json.load(f) or {}).get("name") or os.path.basename(repo)
+    except Exception:
+        return "projet"
+
+
+def _gen_sprint_status(epics, project_name):
+    """Génère un sprint-status.yaml au format STRICT lu par bmad-ui (parser regex)."""
+    safe_name = " ".join(
+        str(project_name).split()
+    )  # aplatit \n/espaces (fichier strict)
+    lines = [
+        f"project: {safe_name}",
+        f"project_key: {_slugify(safe_name).upper()}",
+        "tracking_system: file-system",
+        'story_location: "_bmad-output/implementation-artifacts/stories"',
+        "",
+        "development_status:",
+    ]
+    for e in epics:
+        lines.append(f"  epic-{e['n']}: backlog")
+        for s in e["stories"]:
+            # numéro d'epic = epic PARENT (e['n']), pas s['n'] : un LLM qui numérote mal
+            # une story (Story 2.1 sous Epic 1) ne doit pas créer un epic-2 fantôme côté UI.
+            sid = f"{e['n']}-{s['m']}-{_slugify(s['title'])}"
+            lines.append(f"  {sid}: backlog")
+    return "\n".join(lines) + "\n"
+
+
+def _run_epics_phase(worktree, brief, phase, feedback=""):
+    """Persona epics : LLM produit epics.md (format canonique), sprint-status.yaml est
+    DÉRIVÉ programmatiquement (garantit le format strict + cohérence des slugs)."""
+    content = _persona_content(worktree, brief, phase, feedback)
+    epics = _parse_epics(content)
+    if not epics:
+        raise RuntimeError(
+            "epics.md généré sans '## Epic N:' parsable (board bmad-ui vide) — "
+            "relancer (ai2b revise) ou promouvoir la phase sur Claude"
+        )
+    epics_rel = phase["artifact"]
+    sprint_rel = "_bmad-output/implementation-artifacts/sprint-status.yaml"
+    name = _project_name(worktree)
+    for rel, data in (
+        (epics_rel, content if content.endswith("\n") else content + "\n"),
+        (sprint_rel, _gen_sprint_status(epics, name)),
+    ):
+        dest = os.path.join(worktree, rel)
+        os.makedirs(os.path.dirname(dest), exist_ok=True)
+        with open(dest, "w", encoding="utf-8") as f:
+            f.write(data)
+    _write_commit(worktree, [epics_rel, sprint_rel], phase["key"])
+    n_stories = sum(len(e["stories"]) for e in epics)
+    return f"{epics_rel} (+sprint-status: {len(epics)} epics, {n_stories} stories)"
+
+
+def _dispatch_phase(worktree, brief, phase, feedback=""):
+    """Aiguille selon le type de phase : 'text' (mono-artefact) ou 'epics' (epics + sprint)."""
+    if phase["kind"] == "text":
+        return _run_phase(worktree, brief, phase, feedback)
+    if phase["kind"] == "epics":
+        return _run_epics_phase(worktree, brief, phase, feedback)
+    raise RuntimeError(
+        f"phase '{phase['kind']}' non supportée (B3 : dev-story à venir)"
+    )
 
 
 def _run_pipeline(pid):
@@ -536,10 +698,7 @@ def _run_pipeline(pid):
             while idx < len(PHASES):
                 phase = PHASES[idx]
                 _set_pipe(pid, status="running", phase=phase["key"], phase_index=idx)
-                if phase["kind"] == "text":
-                    art = _run_phase(worktree, brief, phase)
-                else:  # B3 : phase "tools" (dev-story) — non implémentée en B1
-                    raise RuntimeError(f"phase '{phase['kind']}' non supportée (B1)")
+                art = _dispatch_phase(worktree, brief, phase)
                 with PIPELINES_LOCK:
                     PIPELINES[pid].setdefault("artifacts", {})[phase["key"]] = art
                 if phase["checkpoint"]:
@@ -569,7 +728,9 @@ def _revise_pipeline(pid, feedback):
             idx = st["checkpoint_index"]
             phase = PHASES[idx]
             _set_pipe(pid, status="running", phase=phase["key"])
-            art = _run_phase(st["worktree"], st["prompt"], phase, feedback=feedback)
+            art = _dispatch_phase(
+                st["worktree"], st["prompt"], phase, feedback=feedback
+            )
             _set_pipe(
                 pid,
                 status="awaiting_approval",
