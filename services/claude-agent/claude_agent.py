@@ -74,6 +74,11 @@ QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:6333")
 RAG_COMMON = os.environ.get("RAG_COLLECTION", "knowledge")
 EMBED_MODEL = os.environ.get("EMBEDDING_MODEL", "nomic-ai/nomic-embed-text-v1.5")
 
+# Pipeline BMAD multi-persona/multi-LLM (Lot B, ADR 0004).
+# LiteLLM = passerelle des modèles LOCAUX (planning) ; Claude reste sur claude -p (forfait).
+LITELLM_URL = os.environ.get("LITELLM_URL", "http://127.0.0.1:4000")
+LITELLM_KEY = os.environ.get("LITELLM_MASTER_KEY", "")
+
 # Modes : "file" (défaut, outils fichiers) / "build" (Bash en plus, sous garde-fou).
 ALLOWED_TOOLS = {
     "file": ["Read", "Edit", "Write"],
@@ -354,6 +359,287 @@ def run_job(job_id, prompt, repo, mode="file"):
     _callback(job_id)
 
 
+# ============================================================================
+# Pipeline BMAD multi-persona / multi-LLM (Lot B — ADR 0004)
+# ----------------------------------------------------------------------------
+# Moteur de phases : chaque persona produit un artefact, le pipeline s'arrête aux
+# jalons (validation humaine) puis reprend. Routage LLM par phase : planning sur LLM
+# local (LiteLLM), architecte/dev/QA sur Claude (claude -p). B1 = analyst + PM (texte,
+# local) + 1er jalon ; B2/B3 ajouteront archi, epics/stories puis l'implémentation.
+# ============================================================================
+PIPELINES: dict[str, dict] = {}
+PIPELINES_LOCK = threading.Lock()
+
+# Modèle des personas de planning (local via LiteLLM). Défaut local-gemma (charge sur
+# la machine actuelle) ; passer à local-qwen quand la VRAM le permet (meilleure qualité).
+PLANNING_MODEL = os.environ.get("PIPELINE_PLANNING_MODEL", "local-gemma")
+
+PHASES = [
+    {
+        "key": "analyst",
+        "persona": "Analyste produit BMAD (Mary)",
+        "model": PLANNING_MODEL,
+        "kind": "text",
+        "artifact": "docs/brief.md",
+        "context": [],
+        "checkpoint": False,
+        "instruction": (
+            "Rédige un BRIEF PRODUIT concis en français (markdown). Sections : "
+            "Contexte & problème, Utilisateurs cibles, Objectifs, Périmètre pressenti, "
+            "Contraintes & risques. Factuel, sans remplissage."
+        ),
+    },
+    {
+        "key": "pm",
+        "persona": "Product Manager BMAD (John)",
+        "model": PLANNING_MODEL,
+        "kind": "text",
+        "artifact": "docs/prd.md",
+        "context": ["docs/brief.md"],
+        "checkpoint": True,
+        "instruction": (
+            "Rédige un PRD complet en français (markdown), commençant par "
+            "'# PRD — <titre>'. Sections : Contexte et problème, Objectifs (avec "
+            "indicateurs), Personas, Périmètre (MVP / hors-MVP), Exigences "
+            "fonctionnelles (table priorisée), Exigences non fonctionnelles, "
+            "Contraintes techniques, Critères d'acceptation, Risques."
+        ),
+    },
+]
+
+
+def _set_pipe(pid, **kw):
+    with PIPELINES_LOCK:
+        PIPELINES[pid].update(kw)
+    _persist_pipe(pid)
+
+
+def _persist_pipe(pid):
+    """État persisté dans .ai-to-boost/pipeline.json (survit aux redémarrages)."""
+    with PIPELINES_LOCK:
+        state = dict(PIPELINES.get(pid, {}))
+    repo = state.get("repo")
+    if not repo:
+        return
+    try:
+        d = os.path.join(repo, ".ai-to-boost")
+        os.makedirs(d, exist_ok=True)
+        with open(os.path.join(d, "pipeline.json"), "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
+    except Exception as exc:
+        print(f"[pipe] persist {pid}: {exc}", flush=True)
+
+
+def _pipe_callback(pid):
+    if not CALLBACK_URL:
+        return
+    with PIPELINES_LOCK:
+        payload = dict(PIPELINES.get(pid, {}))
+    payload["kind"] = "pipeline"
+    try:
+        req = urllib.request.Request(
+            CALLBACK_URL,
+            data=json.dumps(payload, ensure_ascii=False).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        urllib.request.urlopen(req, timeout=15).read()
+    except Exception as exc:
+        print(f"[pipe-callback] échec {pid}: {exc}", flush=True)
+
+
+def _llm_local(model, system, user, max_tokens=4000):
+    """Chat LiteLLM (modèle local). max_tokens élevé : local-gemma/qwen raisonnent —
+    un budget trop bas renvoie un contenu vide."""
+    body = json.dumps(
+        {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": user},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+    ).encode()
+    req = urllib.request.Request(
+        f"{LITELLM_URL}/v1/chat/completions",
+        data=body,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {LITELLM_KEY}",
+        },
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+        data = json.loads(r.read())
+    msg = (data.get("choices") or [{}])[0].get("message", {}) or {}
+    content = (msg.get("content") or "").strip()
+    if not content:
+        raise RuntimeError(f"réponse vide de {model} (raisonnement sans contenu ?)")
+    return content
+
+
+def _llm_claude_text(prompt):
+    """Persona Claude en mode TEXTE (sans outils) via claude -p forfait."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    }
+    cmd = [CLAUDE, "-p", prompt, "--model", MODEL, "--output-format", "json"]
+    proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=TIMEOUT)
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"claude exit {proc.returncode}")
+    return (json.loads(proc.stdout or "{}").get("result") or "").strip()
+
+
+def _run_phase(worktree, brief, phase, feedback=""):
+    """Persona texte : prompt = rôle + tâche + artefacts amont (+ feedback), écrit + commit."""
+    ctx = ""
+    for rel in phase["context"]:
+        p = os.path.join(worktree, rel)
+        if os.path.isfile(p):
+            with open(p, encoding="utf-8") as f:
+                ctx += f"\n\n## Artefact amont — {rel}\n{f.read()}"
+    system = (
+        f"Tu es {phase['persona']}, dans un pipeline automatisé sans interaction humaine. "
+        f"{phase['instruction']} Réponds UNIQUEMENT par le contenu markdown du document, "
+        "sans préambule ni commentaire."
+    )
+    user = f"# Besoin initial\n{brief}{ctx}"
+    if feedback:
+        user += f"\n\n## Retour à intégrer (révision)\n{feedback}"
+    model = phase["model"]
+    content = (
+        _llm_local(model, system, user)
+        if model.startswith("local-")
+        else _llm_claude_text(f"{system}\n\n{user}")
+    )
+    dest = os.path.join(worktree, phase["artifact"])
+    os.makedirs(os.path.dirname(dest), exist_ok=True)
+    with open(dest, "w", encoding="utf-8") as f:
+        f.write(content if content.endswith("\n") else content + "\n")
+    _git(worktree, "add", phase["artifact"])
+    _git(worktree, "commit", "-m", f"pipeline({phase['key']}): {phase['artifact']}")
+    return phase["artifact"]
+
+
+def _run_pipeline(pid):
+    """Exécute les phases depuis phase_index jusqu'au prochain jalon ou la fin."""
+    with RUN_LOCK:
+        with PIPELINES_LOCK:
+            st = dict(PIPELINES[pid])
+        worktree, brief = st["worktree"], st["prompt"]
+        try:
+            idx = st["phase_index"]
+            while idx < len(PHASES):
+                phase = PHASES[idx]
+                _set_pipe(pid, status="running", phase=phase["key"], phase_index=idx)
+                if phase["kind"] == "text":
+                    art = _run_phase(worktree, brief, phase)
+                else:  # B3 : phase "tools" (dev-story) — non implémentée en B1
+                    raise RuntimeError(f"phase '{phase['kind']}' non supportée (B1)")
+                with PIPELINES_LOCK:
+                    PIPELINES[pid].setdefault("artifacts", {})[phase["key"]] = art
+                if phase["checkpoint"]:
+                    _set_pipe(
+                        pid,
+                        status="awaiting_approval",
+                        checkpoint_index=idx,
+                        phase_index=idx + 1,
+                        awaiting=phase["key"],
+                        last_artifact=art,
+                    )
+                    _pipe_callback(pid)
+                    return
+                idx += 1
+            _finish_pipeline(pid, "done")
+        except Exception as exc:
+            _set_pipe(pid, status="error", error=str(exc))
+            _pipe_callback(pid)
+
+
+def _revise_pipeline(pid, feedback):
+    """Rejoue la phase en attente avec le retour humain, puis re-jalonne."""
+    with RUN_LOCK:
+        with PIPELINES_LOCK:
+            st = dict(PIPELINES[pid])
+        try:
+            idx = st["checkpoint_index"]
+            phase = PHASES[idx]
+            _set_pipe(pid, status="running", phase=phase["key"])
+            art = _run_phase(st["worktree"], st["prompt"], phase, feedback=feedback)
+            _set_pipe(
+                pid,
+                status="awaiting_approval",
+                awaiting=phase["key"],
+                last_artifact=art,
+            )
+            _pipe_callback(pid)
+        except Exception as exc:
+            _set_pipe(pid, status="error", error=str(exc))
+            _pipe_callback(pid)
+
+
+def _finish_pipeline(pid, status):
+    with PIPELINES_LOCK:
+        st = dict(PIPELINES[pid])
+    repo, worktree = st.get("repo"), st.get("worktree")
+    if repo and worktree:
+        try:
+            _git(repo, "worktree", "remove", worktree, "--force", check=False)
+        except Exception:
+            pass
+    _set_pipe(pid, status=status)
+    _pipe_callback(pid)
+
+
+def start_pipeline(prompt, repo, return_target=None):
+    pid = uuid.uuid4().hex[:12]
+    branch = f"pipeline/{pid}"
+    worktree = os.path.join(WORKROOT, f"pl-{pid}")
+    base = _base_branch(repo)
+    _git(repo, "worktree", "add", worktree, "-b", branch, base)
+    with PIPELINES_LOCK:
+        PIPELINES[pid] = {
+            "pipeline_id": pid,
+            "status": "accepted",
+            "repo": repo,
+            "branch": branch,
+            "base": base,
+            "worktree": worktree,
+            "prompt": prompt,
+            "return_target": return_target,
+            "phase_index": 0,
+            "artifacts": {},
+        }
+    _persist_pipe(pid)
+    threading.Thread(target=_run_pipeline, args=(pid,), daemon=True).start()
+    return pid
+
+
+def resume_pipeline(pid, decision):
+    """decision : 'approve' | 'revise:<feedback>' | 'stop'."""
+    with PIPELINES_LOCK:
+        st = dict(PIPELINES.get(pid, {}))
+    if not st:
+        return {"error": "pipeline inconnu"}
+    if st.get("status") != "awaiting_approval":
+        return {"error": f"pipeline non en attente (status={st.get('status')})"}
+    if decision == "approve":
+        _set_pipe(pid, status="running")
+        threading.Thread(target=_run_pipeline, args=(pid,), daemon=True).start()
+    elif decision.startswith("revise:"):
+        fb = decision[len("revise:") :].strip()
+        threading.Thread(target=_revise_pipeline, args=(pid, fb), daemon=True).start()
+    elif decision == "stop":
+        _finish_pipeline(pid, "stopped")
+    else:
+        return {"error": f"décision invalide: {decision}"}
+    return {"pipeline_id": pid, "status": "resuming", "decision": decision}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -385,18 +671,39 @@ class Handler(BaseHTTPRequestHandler):
                 return
             self._send(200, job)
             return
+        if self.path.startswith("/pipelines/"):
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            pid = self.path.split("/pipelines/", 1)[1].strip("/")
+            with PIPELINES_LOCK:
+                st = PIPELINES.get(pid)
+            self._send(200, st) if st else self._send(
+                404, {"error": "pipeline inconnu"}
+            )
+            return
         self._send(404, {"error": "not found"})
 
+    def _read_json(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        return json.loads(self.rfile.read(length) or b"{}")
+
     def do_POST(self):
-        if self.path != "/jobs":
-            self._send(404, {"error": "not found"})
-            return
         if not self._auth_ok():
             self._send(401, {"error": "unauthorized"})
             return
+        if self.path == "/jobs":
+            self._post_job()
+        elif self.path == "/pipelines":
+            self._post_pipeline()
+        elif self.path.startswith("/pipelines/") and self.path.endswith("/resume"):
+            self._post_resume()
+        else:
+            self._send(404, {"error": "not found"})
+
+    def _post_job(self):
         try:
-            length = int(self.headers.get("Content-Length", "0"))
-            data = json.loads(self.rfile.read(length) or b"{}")
+            data = self._read_json()
         except Exception as exc:
             self._send(400, {"error": f"bad json: {exc}"})
             return
@@ -423,6 +730,35 @@ class Handler(BaseHTTPRequestHandler):
             target=run_job, args=(job_id, prompt, repo, mode), daemon=True
         ).start()
         self._send(202, {"job_id": job_id, "status": "accepted"})
+
+    def _post_pipeline(self):
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            self._send(400, {"error": "missing 'prompt'"})
+            return
+        try:
+            repo = _validate_repo(data.get("repo") or DEFAULT_REPO)
+        except ValueError as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        pid = start_pipeline(prompt, repo, data.get("return_target"))
+        self._send(202, {"pipeline_id": pid, "status": "accepted"})
+
+    def _post_resume(self):
+        pid = self.path.split("/pipelines/", 1)[1].rsplit("/resume", 1)[0].strip("/")
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        decision = (data.get("decision") or "").strip()
+        res = resume_pipeline(pid, decision)
+        self._send(400 if res.get("error") else 202, res)
 
 
 def main():
