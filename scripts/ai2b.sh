@@ -335,11 +335,26 @@ cmd_job() {
 }
 
 cmd_ui() {
-  local name path
+  local force_project=0
+  [ "${1:-}" = "--project" ] && force_project=1
+  local name path target wt
   name="$(require_active)"
   path="$(proj_path "$name")"
   [ -d "$path" ] || die "répertoire introuvable : $path"
-  (cd "$path" && exec "$BMAD_START")
+  target="$path"
+  # Par défaut, si un pipeline a un worktree vivant (board live pendant le run, ou
+  # résultat conservé à 'done'), on l'affiche plutôt que la racine projet (sur develop,
+  # vide). '--project' force la racine.
+  if [ "$force_project" = 0 ]; then
+    wt="$(_pipe_field '.worktree')" || wt=""
+    # Même critère que bmad-start (_bmad-output/ OU docs/) : le worktree a docs/ dès le
+    # PRD, et _bmad-output/ à partir des epics.
+    if [ -n "$wt" ] && { [ -d "$wt/_bmad-output" ] || [ -d "$wt/docs" ]; }; then
+      target="$wt"
+      info "  ${c_dim}board du pipeline $(_pipe_field '.pipeline_id') (worktree) — 'ai2b ui --project' pour le repo${c_reset}"
+    fi
+  fi
+  (cd "$target" && exec "$BMAD_START")
 }
 
 # ==============================================================================
@@ -364,6 +379,22 @@ _resolve_pid() { # <id?>  → id explicite, sinon dernier pipeline du projet act
   printf '%s' "$id"
 }
 
+# État pipeline persisté côté projet (<projet>/.ai-to-boost/pipeline.json) : survit au
+# redémarrage du worker, contrairement à l'état en mémoire interrogé via /pipelines.
+_pipe_json() { # imprime le chemin du pipeline.json du projet actif (ou code 1)
+  local name path
+  name="$(active_name)"
+  [ -n "$name" ] || return 1
+  path="$(proj_path "$name")"
+  [ -n "$path" ] && [ -f "$path/.ai-to-boost/pipeline.json" ] || return 1
+  printf '%s' "$path/.ai-to-boost/pipeline.json"
+}
+_pipe_field() { # <jq-filter> → valeur depuis pipeline.json du projet actif (vide sinon)
+  local pj
+  pj="$(_pipe_json)" || return 1
+  jq -r "$1 // empty" "$pj" 2>/dev/null
+}
+
 cmd_run() {
   need curl
   need jq
@@ -382,19 +413,35 @@ cmd_run() {
   [ -n "$pid" ] || die "worker a refusé : $resp"
   reg_write --arg n "$name" --arg id "$pid" '.projects[$n].last_pipeline=$id'
   ok "pipeline ${c_bold}$pid${c_reset} démarré sur '$name'"
-  info "  suivi : ai2b pipeline   |   au jalon : ai2b approve | ai2b revise \"<retour>\" | ai2b stop"
+  info "  suivi : ai2b pipeline   |   board : ai2b ui   |   au jalon : ai2b approve | ai2b revise \"<retour>\" | ai2b stop"
+  info "  à la fin : ai2b result (synthèse) | ai2b ui (board) | ai2b pipeline clean"
 }
 
 cmd_pipeline() {
+  if [ "${1:-}" = "clean" ]; then
+    shift
+    cmd_pipeline_clean "$@"
+    return
+  fi
   need curl
   need jq
-  local id port token
+  local id port token resp
   id="$(_resolve_pid "${1:-}")"
   read -r port token < <(_agent_endpoint)
-  curl -s --max-time 5 -H "Authorization: Bearer $token" \
-    "http://localhost:$port/pipelines/$id" |
-    jq '{pipeline_id, status, phase, awaiting, last_artifact, branch, base, error}' ||
-    die "worker injoignable"
+  resp="$(curl -s --max-time 5 -H "Authorization: Bearer $token" \
+    "http://localhost:$port/pipelines/$id" 2>/dev/null || true)"
+  # Repli : worker injoignable, réponse non-JSON, ou pipeline absent de la mémoire
+  # (ex. après restart → {"error":"pipeline inconnu"}) → lire l'état persisté côté projet.
+  if [ -z "$resp" ] || ! printf '%s' "$resp" | jq -e 'has("status") and .status != null' >/dev/null 2>&1; then
+    local pj
+    if pj="$(_pipe_json)" && [ "$(jq -r '.pipeline_id' "$pj")" = "$id" ]; then
+      info "  ${c_dim}(état persisté — worker sans ce pipeline en mémoire)${c_reset}"
+      resp="$(cat "$pj")"
+    fi
+  fi
+  [ -n "$resp" ] || die "pipeline introuvable (worker injoignable et pas de pipeline.json)"
+  printf '%s' "$resp" |
+    jq '{pipeline_id, status, phase, awaiting, last_artifact, branch, base, error}'
 }
 
 _resume() { # <decision>
@@ -420,6 +467,157 @@ cmd_revise() {
   _resume "revise:$fb"
 }
 cmd_stop() { _resume "stop"; }
+
+cmd_result() { # [pid] — synthèse du résultat d'un pipeline (sans rien merger)
+  need jq
+  need git
+  local name path pj
+  name="$(require_active)"
+  path="$(proj_path "$name")"
+  pj="$(_pipe_json)" || die "aucun pipeline pour '$name' (lancer ai2b run \"<besoin>\")"
+  local id status branch base wt
+  id="$(jq -r '.pipeline_id // "?"' "$pj")"
+  status="$(jq -r '.status // "?"' "$pj")"
+  branch="$(jq -r '.branch // empty' "$pj")"
+  base="$(jq -r '.base // empty' "$pj")"
+  wt="$(jq -r '.worktree // empty' "$pj")"
+
+  info "${c_bold}Pipeline $id${c_reset} — statut : $status"
+  info "  branche : ${branch:-?}    base : ${base:-?}"
+  if [ -n "$wt" ] && [ -d "$wt" ]; then
+    info "  worktree : $wt ${c_dim}(présent)${c_reset}"
+  elif [ -n "$wt" ]; then
+    info "  worktree : ${c_dim}retiré (ai2b run pour régénérer, ou voir la branche)${c_reset}"
+  fi
+
+  # Décompte des stories : worktree si présent, sinon la branche.
+  local sprint yaml=""
+  sprint="_bmad-output/implementation-artifacts/sprint-status.yaml"
+  if [ -n "$wt" ] && [ -f "$wt/$sprint" ]; then
+    yaml="$(cat "$wt/$sprint")"
+  elif [ -n "$branch" ]; then
+    yaml="$(git -C "$path" show "$branch:$sprint" 2>/dev/null || true)"
+  fi
+  if [ -n "$yaml" ]; then
+    local d r p b
+    d="$(printf '%s\n' "$yaml" | grep -cE '^[[:space:]]+[0-9]+-[0-9]+-.*: done$' || true)"
+    r="$(printf '%s\n' "$yaml" | grep -cE '^[[:space:]]+[0-9]+-[0-9]+-.*: review$' || true)"
+    p="$(printf '%s\n' "$yaml" | grep -cE '^[[:space:]]+[0-9]+-[0-9]+-.*: in-progress$' || true)"
+    b="$(printf '%s\n' "$yaml" | grep -cE '^[[:space:]]+[0-9]+-[0-9]+-.*: backlog$' || true)"
+    info "  stories  : done=$d review=$r in-progress=$p backlog=$b"
+  fi
+  local fails
+  fails="$(jq -r '(.impl_failed // []) | length' "$pj" 2>/dev/null || echo 0)"
+  [ "${fails:-0}" != "0" ] &&
+    warn "  échecs implémentation : $fails  (détail : jq .impl_failed \"$pj\")"
+
+  if [ -n "$branch" ] && [ -n "$base" ]; then
+    info ""
+    info "${c_bold}Modifications ($base..$branch)${c_reset}"
+    git -C "$path" diff --stat "$base..$branch" 2>/dev/null | tail -15 | sed 's/^/  /' || true
+  fi
+
+  cat <<EOF
+
+${c_bold}Consulter / intégrer${c_reset} ${c_dim}(rien n'est mergé automatiquement)${c_reset}
+  board    : ai2b ui
+  revue    : git -C "$path" checkout $branch
+  merge    : git -C "$path" checkout $base && git -C "$path" merge --no-ff $branch
+  nettoyer : ai2b pipeline clean         (worktree ; --branch pour aussi la branche)
+EOF
+}
+
+cmd_pipeline_clean() { # [--branch] — retire le worktree conservé (et opt. la branche)
+  need jq
+  need git
+  local drop_branch=0 a
+  for a in "$@"; do
+    case "$a" in
+      --branch | --all) drop_branch=1 ;;
+    esac
+  done
+  local name path pj id branch wt
+  name="$(require_active)"
+  path="$(proj_path "$name")"
+  pj="$(_pipe_json)" || die "aucun pipeline.json pour '$name'"
+  id="$(jq -r '.pipeline_id // "?"' "$pj")"
+  branch="$(jq -r '.branch // empty' "$pj")"
+  wt="$(jq -r '.worktree // empty' "$pj")"
+
+  local what="worktree"
+  [ "$drop_branch" = 1 ] && what="worktree + branche $branch (code PERDU si non mergé)"
+  printf '%sNettoyer le pipeline %s — %s ? [y/N] %s' "$c_red" "$id" "$what" "$c_reset"
+  read -r ans
+  [ "$ans" = "y" ] || [ "$ans" = "Y" ] || die "annulé"
+
+  if [ -n "$wt" ]; then
+    if git -C "$path" worktree remove "$wt" --force 2>/dev/null; then
+      ok "worktree retiré : $wt"
+    else
+      info "  (worktree déjà absent)"
+    fi
+  fi
+  if [ "$drop_branch" = 1 ] && [ -n "$branch" ]; then
+    if git -C "$path" branch -D "$branch" 2>/dev/null; then
+      ok "branche supprimée : $branch"
+    else
+      info "  (branche absente)"
+    fi
+  fi
+}
+
+cmd_collect() { # [--clean] — intègre pipeline/<id> → base du projet (merge --no-ff)
+  need git
+  need jq
+  local do_clean=0 a
+  for a in "$@"; do
+    case "$a" in
+      --clean) do_clean=1 ;;
+    esac
+  done
+  local name path pj id branch base wt
+  name="$(require_active)"
+  path="$(proj_path "$name")"
+  pj="$(_pipe_json)" || die "aucun pipeline pour '$name' (lancer ai2b run \"<besoin>\")"
+  id="$(jq -r '.pipeline_id // "?"' "$pj")"
+  branch="$(jq -r '.branch // empty' "$pj")"
+  base="$(jq -r '.base // empty' "$pj")"
+  wt="$(jq -r '.worktree // empty' "$pj")"
+  if [ -z "$branch" ] || [ -z "$base" ]; then
+    die "pipeline.json incomplet (branch/base)"
+  fi
+  git -C "$path" rev-parse --verify "$branch" >/dev/null 2>&1 ||
+    die "branche $branch introuvable (déjà nettoyée ?)"
+  # Garde-fou : aucune modif SUIVIE en attente (le merge bascule de branche). Les fichiers
+  # non suivis (ex. .ai-to-boost/ gitignoré) ne bloquent pas checkout/merge → ignorés.
+  [ -z "$(git -C "$path" status --porcelain --untracked-files=no)" ] ||
+    die "copie de travail de '$name' a des modifs non commitées — committe/stash avant collect"
+
+  printf '%sIntégrer %s → %s du projet %s (merge --no-ff) ? [y/N] %s' \
+    "$c_red" "$branch" "$base" "$name" "$c_reset"
+  read -r ans
+  [ "$ans" = "y" ] || [ "$ans" = "Y" ] || die "annulé"
+
+  git -C "$path" checkout "$base" 2>/dev/null || die "checkout $base impossible"
+  if git -C "$path" merge --no-ff --no-edit \
+    -m "Merge $branch into $base — pipeline BMAD $id" "$branch"; then
+    ok "intégré : $branch → $base"
+  else
+    git -C "$path" merge --abort 2>/dev/null || true
+    die "conflits de merge — résoudre à la main : git -C \"$path\" merge --no-ff $branch"
+  fi
+
+  if [ "$do_clean" = 1 ]; then
+    if [ -n "$wt" ]; then
+      git -C "$path" worktree remove "$wt" --force 2>/dev/null && ok "worktree retiré"
+    fi
+    # -d : ne supprime que si bien mergée (elle l'est) ; sinon on la garde.
+    if git -C "$path" branch -d "$branch" 2>/dev/null; then
+      ok "branche supprimée : $branch"
+    fi
+  fi
+  info "  ${c_dim}push : git -C \"$path\" push origin $base (si remote configuré)${c_reset}"
+}
 
 # ==============================================================================
 cmd_help() {
@@ -452,6 +650,10 @@ ${c_bold}Projet actif — pipeline BMAD${c_reset}
   ai2b approve              valide le jalon courant et continue
   ai2b revise "<retour>"    rejoue la phase en attente avec un retour
   ai2b stop                 arrête le pipeline
+  ai2b result               synthèse du résultat (branche, stories, diff, intégration)
+  ai2b ui                   board bmad-ui du pipeline (worktree) ; --project = repo
+  ai2b collect [--clean]    merge pipeline/<id> → base du projet (--clean : purge ensuite)
+  ai2b pipeline clean       retire le worktree conservé (--branch : aussi la branche)
 
 Registre : $REGISTRY
 Projets par défaut : $PROJECTS_DIR
@@ -480,6 +682,8 @@ main() {
     ui) cmd_ui "$@" ;;
     run) cmd_run "$@" ;;
     pipeline | pl) cmd_pipeline "$@" ;;
+    result | res) cmd_result "$@" ;;
+    collect) cmd_collect "$@" ;;
     approve | ok) cmd_approve "$@" ;;
     revise) cmd_revise "$@" ;;
     stop) cmd_stop "$@" ;;

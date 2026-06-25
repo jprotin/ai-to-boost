@@ -908,7 +908,10 @@ def _finish_pipeline(pid, status):
                 _write_commit(worktree, [SPRINT_REL], "stories done")
         except Exception as exc:
             print(f"[pipe] bump review->done {pid}: {exc}", flush=True)
-    if repo and worktree:
+    # Le worktree pl-<pid> est CONSERVÉ à 'done'/'error' : c'est le point de
+    # consultation du résultat (board bmad-ui via `ai2b ui`, code via `ai2b result`).
+    # Il n'est retiré qu'à 'stopped' (abandon) ou explicitement via `ai2b pipeline clean`.
+    if status == "stopped" and repo and worktree:
         try:
             _git(repo, "worktree", "remove", worktree, "--force", check=False)
         except Exception:
