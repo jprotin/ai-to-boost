@@ -171,6 +171,37 @@ def test_write_story_md_nom_exact_et_status():
     assert mt and mt.group(1) == "review", content
 
 
+def test_rollup_epics_etats():
+    """epic-N : done si toutes ses stories done, backlog si toutes backlog, sinon in-progress."""
+    wt = _seed_worktree()  # 2 epics, stories toutes backlog
+    # état initial : tout backlog -> epics backlog
+    assert m._rollup_epics(wt) == {"1": "backlog", "2": "backlog"}
+    # une story de l'epic 1 en review -> epic 1 in-progress, epic 2 inchangé
+    m._set_story_status(wt, "1-1-crer-un-compte", "review")
+    assert m._rollup_epics(wt) == {"1": "in-progress", "2": "backlog"}
+    # toutes les stories de l'epic 1 done -> epic 1 done
+    m._set_story_status(wt, "1-1-crer-un-compte", "done")
+    m._set_story_status(wt, "1-2-se-connecter", "done")
+    assert m._rollup_epics(wt)["1"] == "done"
+    # in-progress compte comme démarré
+    m._set_story_status(wt, "2-1-voir-son-profil", "in-progress")
+    assert m._rollup_epics(wt)["2"] == "in-progress"
+
+
+def test_rollup_epics_conforme_regex_bmad_ui():
+    """Après rollup, les lignes epic restent conformes au parser bmad-ui."""
+    wt = _seed_worktree()
+    m._set_story_status(wt, "1-1-crer-un-compte", "done")
+    m._set_story_status(wt, "1-2-se-connecter", "done")
+    m._rollup_epics(wt)
+    with open(os.path.join(wt, m.SPRINT_REL), encoding="utf-8") as f:
+        lines = f.read().splitlines()
+    epic_lines = [ln for ln in lines if ln.strip().startswith("epic-")]
+    assert epic_lines and all(EPIC_STATUS_RE.match(ln) for ln in epic_lines)
+    assert "  epic-1: done" in lines  # rollup appliqué
+    assert "  epic-2: backlog" in lines  # epic 2 intact
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
