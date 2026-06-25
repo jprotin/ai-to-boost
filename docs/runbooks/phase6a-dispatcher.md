@@ -91,6 +91,11 @@ Le dispatcher pilote aussi le **pipeline BMAD** (en plus des jobs one-shot). Com
 /stop              → … {decision:"stop"}
 ```
 
+- **À la voix (C5)** : le `telegram-poller` mappe une commande dictée vers sa forme
+  `/slash` avant d'envoyer au dispatcher (`_voice_to_command`) — « lance une page… » →
+  `/run une page…`, « stop » → `/stop`, « approuve » → `/approve`, « révise … » →
+  `/revise …` (aussi « slash/barre <cmd> »). Appliqué **aux messages vocaux uniquement** ;
+  un texte tapé n'est jamais réinterprété. Aucun changement n8n.
 - Le **projet cible** est `AGENT_DEFAULT_REPO` (réglé par `ai2b switch <projet>`).
 - La **corrélation** canal↔pipeline est faite **par le worker** (`/pipelines/resume`
   résout le pipeline en attente du `return_target`) → pas de `pipeline_id` à manipuler

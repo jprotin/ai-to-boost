@@ -18,6 +18,7 @@ Variables d'environnement (cf. .env) :
 
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -102,6 +103,56 @@ def send_message(chat_id, text: str) -> None:
     _post_json(f"{API}/sendMessage", {"chat_id": chat_id, "text": text}, timeout=30)
 
 
+# Commandes du pipeline dictées à la voix : verbe en tête → commande slash. Le dispatcher
+# n8n ne comprend que '/run /approve /revise /stop' ; la voix ne contient jamais de '/'.
+_VOICE_CMD = {
+    "run": "run",
+    "lance": "run",
+    "lancer": "run",
+    "démarre": "run",
+    "démarrer": "run",
+    "approuve": "approve",
+    "approuver": "approve",
+    "valide": "approve",
+    "valider": "approve",
+    "ok": "approve",
+    "approve": "approve",
+    "révise": "revise",
+    "réviser": "revise",
+    "corrige": "revise",
+    "corriger": "revise",
+    "revise": "revise",
+    "stop": "stop",
+    "stoppe": "stop",
+    "arrête": "stop",
+    "arrêter": "stop",
+    "annule": "stop",
+    "annuler": "stop",
+}
+
+
+def _voice_to_command(text: str) -> str:
+    """Mappe une commande DICTÉE vers sa forme '/slash' (le dispatcher n8n l'attend ainsi).
+    'lance une page html' -> '/run une page html' ; 'stop' -> '/stop' ; gère aussi un
+    'slash/barre <cmd>' littéral. Renvoie le texte inchangé si ce n'est pas une commande
+    (→ traité comme du chat). À n'appliquer qu'aux messages VOCAUX."""
+    s = (text or "").strip()
+    if not s or s.startswith("/"):
+        return text
+    # 'slash run ...' / 'barre run ...' (l'utilisateur dicte le mot 'slash')
+    m = re.match(r"^(?:slash|barre)\s+(\w+)\s*(.*)$", s, re.I | re.S)
+    if m:
+        return f"/{m.group(1).lower()} {m.group(2).strip()}".rstrip()
+    # premier mot = verbe de commande connu (ponctuation de fin tolérée)
+    m = re.match(r"^(\w+)[\s,.:;!?]*(.*)$", s, re.I | re.S)
+    if not m:
+        return text
+    cmd = _VOICE_CMD.get(m.group(1).lower())
+    if not cmd:
+        return text
+    return f"/{cmd} {m.group(2).strip()}".rstrip()
+
+
 def handle(update: dict) -> None:
     msg = update.get("message") or update.get("edited_message")
     if not msg:
@@ -116,6 +167,8 @@ def handle(update: dict) -> None:
         send_message(chat_id, "🎙️ Transcription en cours…")
         media = msg.get("voice") or msg.get("audio")
         user_text = voice_to_text(media["file_id"])
+        # Commande dictée (« lance … », « stop ») → forme /slash pour le dispatcher.
+        user_text = _voice_to_command(user_text)
     else:
         send_message(chat_id, "Type de message non supporté (texte ou voix).")
         return
