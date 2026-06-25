@@ -202,6 +202,36 @@ def test_rollup_epics_conforme_regex_bmad_ui():
     assert "  epic-2: backlog" in lines  # epic 2 intact
 
 
+def test_resolve_pipeline_for_target():
+    """Corrélation canal↔pipeline : le pipeline 'awaiting' le plus récent du return_target."""
+    saved = dict(m.PIPELINES)
+    try:
+        m.PIPELINES.clear()
+        m.PIPELINES["p1"] = {"return_target": "123", "status": "done"}
+        m.PIPELINES["p2"] = {"return_target": "123", "status": "awaiting_approval"}
+        m.PIPELINES["p3"] = {"return_target": "999", "status": "awaiting_approval"}
+        assert m._resolve_pipeline_for_target("123") == "p2"  # awaiting du bon canal
+        assert m._resolve_pipeline_for_target("000") is None  # canal sans pipeline
+        assert m._resolve_pipeline_for_target(None) is None
+        m.PIPELINES["p4"] = {"return_target": "123", "status": "awaiting_approval"}
+        assert m._resolve_pipeline_for_target("123") == "p4"  # le plus récent gagne
+        assert m._resolve_pipeline_for_target(123) == "p4"  # tolérance int/str
+    finally:
+        m.PIPELINES.clear()
+        m.PIPELINES.update(saved)
+
+
+def test_resume_by_target_sans_pipeline():
+    saved = dict(m.PIPELINES)
+    try:
+        m.PIPELINES.clear()
+        res = m.resume_pipeline_by_target("approve", "nobody")
+        assert res.get("error"), res
+    finally:
+        m.PIPELINES.clear()
+        m.PIPELINES.update(saved)
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

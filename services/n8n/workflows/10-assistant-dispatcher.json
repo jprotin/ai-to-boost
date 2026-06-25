@@ -18,7 +18,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normalise toutes les entrées vers {command, payload, return_target, source, mode}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet mode = 'file';\nlet payload = text;\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  if (c === 'chat' || c === 'claude' || c === 'code' || c === 'build') {\n    command = (c === 'chat' || c === 'claude') ? c : 'code';\n    mode = (c === 'build') ? 'build' : 'file';\n    payload = m[2].trim();\n  }\n}\nreturn [{ json: { command, payload, return_target, source, mode } }];"
+        "jsCode": "// Normalise les entrées vers {command, payload, return_target, source, mode, pipe_url, pipe_body}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet mode = 'file';\nlet payload = text;\nlet pipe_url = '';\nlet pipe_body = {};\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  const rest = m[2].trim();\n  if (c === 'chat' || c === 'claude') { command = c; payload = rest; }\n  else if (c === 'code' || c === 'build') { command = 'code'; mode = (c === 'build') ? 'build' : 'file'; payload = rest; }\n  else if (c === 'run') { command = 'pipeline'; pipe_url = '/pipelines'; pipe_body = { prompt: rest, return_target }; }\n  else if (c === 'approve' || c === 'stop' || c === 'revise') {\n    command = 'pipeline'; pipe_url = '/pipelines/resume';\n    const decision = (c === 'revise') ? ('revise:' + rest) : c;\n    pipe_body = { decision, return_target };\n  }\n}\nreturn [{ json: { command, payload, return_target, source, mode, pipe_url, pipe_body } }];\n"
       },
       "id": "a0000000-0000-0000-0000-000000000002",
       "name": "Normalisation",
@@ -41,7 +41,10 @@
                   {
                     "leftValue": "={{ $json.command }}",
                     "rightValue": "claude",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
                   }
                 ],
                 "combinator": "and"
@@ -60,17 +63,45 @@
                   {
                     "leftValue": "={{ $json.command }}",
                     "rightValue": "code",
-                    "operator": { "type": "string", "operation": "equals" }
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
                   }
                 ],
                 "combinator": "and"
               },
               "renameOutput": true,
               "outputKey": "code"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": false,
+                  "leftValue": "",
+                  "typeValidation": "loose"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.command }}",
+                    "rightValue": "pipeline",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "pipeline"
             }
           ]
         },
-        "options": { "fallbackOutput": "extra", "renameFallbackOutput": "chat" }
+        "options": {
+          "fallbackOutput": "extra",
+          "renameFallbackOutput": "chat"
+        }
       },
       "id": "a0000000-0000-0000-0000-000000000003",
       "name": "Switch commande",
@@ -87,7 +118,10 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -101,7 +135,10 @@
       "typeVersion": 4.2,
       "position": [900, 160],
       "credentials": {
-        "httpHeaderAuth": { "id": "bridgetoken00001", "name": "Bridge token" }
+        "httpHeaderAuth": {
+          "id": "bridgetoken00001",
+          "name": "Bridge token"
+        }
       }
     },
     {
@@ -133,7 +170,10 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -147,7 +187,10 @@
       "typeVersion": 4.2,
       "position": [900, 320],
       "credentials": {
-        "httpHeaderAuth": { "id": "agenttoken000001", "name": "Agent token" }
+        "httpHeaderAuth": {
+          "id": "agenttoken000001",
+          "name": "Agent token"
+        }
       }
     },
     {
@@ -179,7 +222,10 @@
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
-            { "name": "Content-Type", "value": "application/json" }
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
           ]
         },
         "sendBody": true,
@@ -230,41 +276,207 @@
       "type": "n8n-nodes-base.respondToWebhook",
       "typeVersion": 1.1,
       "position": [1360, 320]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "=http://host.docker.internal:8089{{ $json.pipe_url }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "httpHeaderAuth",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json.pipe_body) }}",
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000011",
+      "name": "Pipeline (worker)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [900, 680],
+      "onError": "continueRegularOutput",
+      "credentials": {
+        "httpHeaderAuth": {
+          "id": "agenttoken000001",
+          "name": "Agent token"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "rp",
+              "name": "reply",
+              "value": "=🚀 {{ $json.pipeline_id ? ('pipeline ' + $json.pipeline_id + ' : ' + $json.status) : ($json.error ? ('⚠️ ' + $json.error) : 'commande pipeline envoyée') }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "a0000000-0000-0000-0000-000000000012",
+      "name": "Reply pipeline",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [1120, 680]
     }
   ],
   "connections": {
     "Webhook assistant-in": {
-      "main": [[{ "node": "Normalisation", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Normalisation",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Normalisation": {
-      "main": [[{ "node": "Switch commande", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Switch commande",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Switch commande": {
       "main": [
-        [{ "node": "Bridge claude -p", "type": "main", "index": 0 }],
-        [{ "node": "Lancer job (worker)", "type": "main", "index": 0 }],
-        [{ "node": "LiteLLM local-gemma", "type": "main", "index": 0 }]
+        [
+          {
+            "node": "Bridge claude -p",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Lancer job (worker)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Pipeline (worker)",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "LiteLLM local-gemma",
+            "type": "main",
+            "index": 0
+          }
+        ]
       ]
     },
     "Bridge claude -p": {
-      "main": [[{ "node": "Reply claude", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Reply claude",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Reply claude": {
-      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Répondre au webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Lancer job (worker)": {
-      "main": [[{ "node": "Reply code", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Reply code",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Reply code": {
-      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Répondre au webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "LiteLLM local-gemma": {
-      "main": [[{ "node": "Reply chat", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Reply chat",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     },
     "Reply chat": {
-      "main": [[{ "node": "Répondre au webhook", "type": "main", "index": 0 }]]
+      "main": [
+        [
+          {
+            "node": "Répondre au webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Pipeline (worker)": {
+      "main": [
+        [
+          {
+            "node": "Reply pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Reply pipeline": {
+      "main": [
+        [
+          {
+            "node": "Répondre au webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
     }
   },
-  "settings": { "executionOrder": "v1" },
+  "settings": {
+    "executionOrder": "v1"
+  },
   "active": false
 }
