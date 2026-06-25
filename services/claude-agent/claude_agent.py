@@ -948,7 +948,16 @@ def _finish_pipeline(pid, status):
             _git(repo, "worktree", "remove", worktree, "--force", check=False)
         except Exception:
             pass
-    _set_pipe(pid, status=status)
+    # diff_stat à done : message de fin utile côté canal (Telegram/web).
+    extra = {}
+    if status == "done" and repo and st.get("branch") and st.get("base"):
+        try:
+            extra["diff_stat"] = _git(
+                repo, "diff", "--stat", f"{st['base']}..{st['branch']}"
+            )
+        except Exception:
+            pass
+    _set_pipe(pid, status=status, **extra)
     _pipe_callback(pid)
 
 
@@ -995,6 +1004,33 @@ def resume_pipeline(pid, decision):
     else:
         return {"error": f"décision invalide: {decision}"}
     return {"pipeline_id": pid, "status": "resuming", "decision": decision}
+
+
+def _resolve_pipeline_for_target(return_target):
+    """pid du pipeline en attente de validation pour ce canal (return_target), le plus
+    récent. Permet de décider depuis Telegram/web sans connaître le pid (corrélation
+    canal↔pipeline côté worker → n8n reste un relais fin)."""
+    if not return_target:
+        return None
+    match = None
+    with PIPELINES_LOCK:
+        for (
+            pid,
+            st,
+        ) in PIPELINES.items():  # dict ordonné par insertion → garde le dernier
+            if str(st.get("return_target")) == str(return_target) and (
+                st.get("status") == "awaiting_approval"
+            ):
+                match = pid
+    return match
+
+
+def resume_pipeline_by_target(decision, return_target):
+    """Reprise sans pid : résout le pipeline en attente du canal puis délègue."""
+    pid = _resolve_pipeline_for_target(return_target)
+    if not pid:
+        return {"error": "aucun pipeline en attente pour ce canal"}
+    return resume_pipeline(pid, decision)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1053,6 +1089,8 @@ class Handler(BaseHTTPRequestHandler):
             self._post_job()
         elif self.path == "/pipelines":
             self._post_pipeline()
+        elif self.path == "/pipelines/resume":
+            self._post_resume_by_target()
         elif self.path.startswith("/pipelines/") and self.path.endswith("/resume"):
             self._post_resume()
         else:
@@ -1115,6 +1153,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         decision = (data.get("decision") or "").strip()
         res = resume_pipeline(pid, decision)
+        self._send(400 if res.get("error") else 202, res)
+
+    def _post_resume_by_target(self):
+        """Reprise sans pid (depuis un canal) : résout via return_target."""
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        decision = (data.get("decision") or "").strip()
+        res = resume_pipeline_by_target(decision, data.get("return_target"))
         self._send(400 if res.get("error") else 202, res)
 
 
