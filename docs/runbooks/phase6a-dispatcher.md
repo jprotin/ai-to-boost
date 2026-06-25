@@ -79,7 +79,33 @@ Test Telegram bout-en-bout : envoyer un message au bot (texte et `/claude …`).
 - `reply` vide en chat : `max_tokens` trop bas (gemma = modèle à raisonnement, prévoir ≥ 2048).
 - 401/403 sur une route : credential manquant/incorrect dans l'instance n8n.
 
+## Pipeline BMAD via Telegram (Lot C — C1+C2)
+
+Le dispatcher pilote aussi le **pipeline BMAD** (en plus des jobs one-shot). Commandes
+(texte ou voix transcrite) :
+
+```
+/run <besoin>      → POST :8089/pipelines  (lance le pipeline sur le projet actif)
+/approve           → POST :8089/pipelines/resume {decision:"approve"}
+/revise <retour>   → … {decision:"revise:<retour>"}
+/stop              → … {decision:"stop"}
+```
+
+- Le **projet cible** est `AGENT_DEFAULT_REPO` (réglé par `ai2b switch <projet>`).
+- La **corrélation** canal↔pipeline est faite **par le worker** (`/pipelines/resume`
+  résout le pipeline en attente du `return_target`) → pas de `pipeline_id` à manipuler
+  côté Telegram. Un seul pipeline en attente par canal à la fois.
+- **Notifications de jalon (C1)** : le worker POSTe `_pipe_callback` (`kind:"pipeline"`)
+  vers `/webhook/job-callback`. Le workflow `11-job-callback` formate :
+  `awaiting_approval` → « ⏸ Jalon … → /approve · /revise · /stop » ; `done` → « ✅ … » +
+  `diff_stat` ; `error`/`stopped` → message dédié ; `running`/`accepted` ignorés (anti-spam).
+
+**Import** : ré-importer `10-assistant-dispatcher.json` et `11-job-callback.json` dans n8n,
+vérifier les credentials (`Agent token`, `Poller notify token`), activer + `docker restart
+n8n`. Même backend que `ai2b run/approve/...` (cf. ai2b.md).
+
 ## Évolutions (phases suivantes)
 
 - **6b** : route `/code` → worker agentique (`POST /jobs`, async) + webhook `/job-callback`.
 - **6c** : entrée murmure (`/voice-in`, forme OpenAI) + notifications de résultat.
+- **Lot C (suite)** : entrée web (chat), TTS (réponses vocales).
