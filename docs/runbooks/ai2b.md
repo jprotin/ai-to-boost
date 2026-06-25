@@ -55,22 +55,33 @@ avec le `repo` du projet actif. Récupération du résultat : `git checkout agen
 ## Pipeline BMAD (Lot B, ADR 0004)
 
 Au lieu d'une tâche one-shot, déroule la **méthode BMAD** par personas avec jalons de
-validation. État B1 : phases _analyst_ + _PM_ (texte, LLM local) + 1er jalon après le PRD.
+validation. Séquence complète : *analyst*→brief, *PM*→PRD, *architecte*→archi,
+*PM/SM*→epics/stories, *dev-story*→implémentation (1 jalon par étape).
 
 ```bash
-ai2b run "<besoin>"      # démarre le pipeline (analyst→brief, PM→PRD) puis s'arrête au jalon
-ai2b pipeline [id]       # état (défaut : dernier pipeline du projet actif)
+ai2b run "<besoin>"      # démarre le pipeline puis s'arrête au 1er jalon (PRD)
+ai2b pipeline [id]       # état (défaut : dernier pipeline ; repli sur pipeline.json)
 ai2b approve             # valide le jalon et continue
 ai2b revise "<retour>"   # rejoue la phase en attente avec un retour humain
-ai2b stop                # arrête le pipeline
+ai2b stop                # arrête le pipeline (retire le worktree)
+ai2b result              # synthèse : branche, stories, échecs, diff, comment intégrer
+ai2b ui                  # board bmad-ui DU pipeline (worktree) ; --project pour le repo
+ai2b collect [--clean]   # merge pipeline/<id> → base du projet (--clean : purge worktree+branche)
+ai2b pipeline clean      # retire le worktree conservé (--branch : aussi la branche)
 ```
 
 - Endpoints worker : `POST /pipelines`, `GET /pipelines/<id>`, `POST /pipelines/<id>/resume`.
 - Branche dédiée `pipeline/<id>` (worktree), artefacts committés par phase ; aucun push/merge.
-- État persisté dans `.ai-to-boost/pipeline.json`.
+- État persisté dans `.ai-to-boost/pipeline.json` (lu par `result`/`ui`/`pipeline` — survit au
+  redémarrage du worker, qui perd son état en mémoire).
 - Routage LLM : planning sur `PIPELINE_PLANNING_MODEL` (défaut `local-gemma`) via LiteLLM ;
-  architecte/dev/QA sur Claude (`claude -p`) — ajoutés en B2/B3.
-- Récupération : `git checkout pipeline/<id>` puis `ai2b ui` pour le board bmad-ui.
+  architecte + dev sur Claude (`claude -p`) ; QA en auto-revue dans le prompt dev.
+- **Surface du résultat** : le worktree `pl-<id>` est **conservé** à `done` (et `error`) ; c'est
+  le point de consultation. `ai2b ui` y pointe automatiquement (board live pendant le run, board
+  final ensuite), `ai2b result` résume et donne les commandes de revue/merge. L'intégration
+  n'est **jamais automatique** : après revue, `ai2b collect` merge `pipeline/<id>` → base
+  (`--no-ff`, copie propre exigée, abort sur conflit ; `--clean` purge worktree+branche ensuite).
+  `ai2b pipeline clean` libère le worktree sans merger.
 
 ## Notes
 

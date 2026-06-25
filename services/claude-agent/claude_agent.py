@@ -691,6 +691,8 @@ IMPL_DIR = "_bmad-output/implementation-artifacts"
 STORY_STATUSES = ("backlog", "ready-for-dev", "in-progress", "review", "done")
 # Ligne story du sprint-status.yaml : '  N-M-slug: statut' (les 'epic-N:' ne matchent pas).
 _STORY_LINE_RE = re.compile(r"^(\s+)(\d+-\d+-[a-z0-9-]+):\s*(\S+)\s*$")
+# Ligne epic : '  epic-N: statut' (statut epic bmad-ui ∈ backlog|in-progress|done).
+_EPIC_LINE_RE = re.compile(r"^(\s+)epic-(\d+):\s*\S+\s*$")
 
 
 def _read_sprint_status(worktree):
@@ -717,6 +719,33 @@ def _set_story_status(worktree, story_id, status):
             break
     with open(path, "w", encoding="utf-8") as f:
         f.writelines(lines)
+
+
+def _rollup_epics(worktree):
+    """Recalcule chaque ligne 'epic-N:' depuis l'état de ses stories : 'done' si toutes
+    done, 'backlog' si toutes backlog, sinon 'in-progress' (bmad-ui n'accepte que ces 3).
+    Réécrit le fichier en place. Retourne {N: statut}."""
+    by_epic = {}
+    for s in _read_sprint_status(worktree):
+        by_epic.setdefault(s["id"].split("-")[0], []).append(s["status"])
+    rollup = {}
+    for n, sts in by_epic.items():
+        if all(x == "done" for x in sts):
+            rollup[n] = "done"
+        elif all(x == "backlog" for x in sts):
+            rollup[n] = "backlog"
+        else:
+            rollup[n] = "in-progress"
+    path = os.path.join(worktree, SPRINT_REL)
+    with open(path, encoding="utf-8") as f:
+        lines = f.readlines()
+    for i, line in enumerate(lines):
+        m = _EPIC_LINE_RE.match(line.rstrip("\n"))
+        if m and m.group(2) in rollup:
+            lines[i] = f"{m.group(1)}epic-{m.group(2)}: {rollup[m.group(2)]}\n"
+    with open(path, "w", encoding="utf-8") as f:
+        f.writelines(lines)
+    return rollup
 
 
 def _write_story_md(worktree, story_id, status, body):
@@ -776,6 +805,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
         sid = s["id"]
         try:
             _set_story_status(worktree, sid, "in-progress")
+            _rollup_epics(worktree)  # l'epic parent passe in-progress
             _write_commit(worktree, [SPRINT_REL], f"story {sid} in-progress")
             _inject_bmad(worktree)  # skills BMAD visibles pendant le dev
             try:
@@ -791,6 +821,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
                     worktree
                 )  # avant tout commit (ne pas committer les symlinks)
             _set_story_status(worktree, sid, "review")
+            _rollup_epics(worktree)  # epic done si toutes ses stories le sont
             _write_story_md(worktree, sid, "review", res.get("summary", ""))
             _git(worktree, "add", "-A")
             _git(worktree, "commit", "-m", f"pipeline(story {sid}): implémentation")
@@ -905,10 +936,14 @@ def _finish_pipeline(pid, status):
                 for s in _read_sprint_status(worktree):
                     if s["status"] == "review":
                         _set_story_status(worktree, s["id"], "done")
+                _rollup_epics(worktree)  # epics done quand toutes leurs stories le sont
                 _write_commit(worktree, [SPRINT_REL], "stories done")
         except Exception as exc:
             print(f"[pipe] bump review->done {pid}: {exc}", flush=True)
-    if repo and worktree:
+    # Le worktree pl-<pid> est CONSERVÉ à 'done'/'error' : c'est le point de
+    # consultation du résultat (board bmad-ui via `ai2b ui`, code via `ai2b result`).
+    # Il n'est retiré qu'à 'stopped' (abandon) ou explicitement via `ai2b pipeline clean`.
+    if status == "stopped" and repo and worktree:
         try:
             _git(repo, "worktree", "remove", worktree, "--force", check=False)
         except Exception:
