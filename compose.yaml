@@ -23,6 +23,7 @@ volumes:
   whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
   n8n-data: # données n8n (/home/node/.n8n : config, clés, binaires)
   qdrant-data: # base vectorielle Qdrant (RAG)
+  webui-data: # SQLite des conversations de la web-app (ADR 0005)
 
 services:
   # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)
@@ -188,3 +189,6 @@ services:
       WORKER_URL: http://host.docker.internal:8089
       BRIDGE_URL: http://host.docker.internal:8088
       LITELLM_URL: http://litellm:4000
+      WEBUI_DB_PATH: /app/data/webui.db
+    volumes:
+      - webui-data:/app/data

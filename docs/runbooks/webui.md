@@ -65,6 +65,19 @@ npm run dev   # http://localhost:3000
 - `/login` accessible sans session ; toute autre page redirige vers `/login` si non connecté.
 - Connexion → 5 pages (shells) + menu utilisateur → Déconnexion → retour `/login`.
 
+## Chat (C3.1 / C3.1b)
+
+- **Modèles dynamiques** : `GET /api/models` sonde le bridge (`/health`) et LiteLLM
+  (`/health`) → ne propose que les modèles **réellement disponibles** (ex. `local-qwen`
+  masqué s'il n'est pas chargé dans LM Studio).
+- **Persistance** : conversations + messages en **SQLite** (Drizzle), fichier
+  `WEBUI_DB_PATH` (défaut `/app/data/webui.db`, volume docker `webui-data`). Tables créées
+  de façon idempotente au démarrage (pas de migration à lancer). Mémoire = l'historique est
+  rejoué à chaque appel (LiteLLM multi-tour ; Claude via transcript).
+- Routes : `POST /api/chat` (génère + persiste), `GET /api/conversations`,
+  `GET|DELETE /api/conversations/<id>`.
+- **Image** : base `node:24-slim` (et non alpine) pour le binaire natif `better-sqlite3`.
+
 ## Notes
 
 - **CGU** : le chat Claude (C3.1) passera par le bridge `claude -p` (forfait), **jamais**

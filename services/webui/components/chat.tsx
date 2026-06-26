@@ -1,9 +1,8 @@
 "use client";
 
-import { Loader2, Plus, Send } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { Loader2, Plus, Send, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
-import { CHAT_MODELS } from "@/lib/models";
 import { cn } from "@/lib/utils";
 import {
   AlertDialog,
@@ -27,21 +26,81 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 
 type Msg = { role: "user" | "assistant"; content: string };
+type Model = { id: string; label: string };
+type Conversation = { id: string; title: string; model: string };
 
 export function Chat() {
+  const [conversations, setConversations] = useState<Conversation[]>([]);
+  const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
-  const [model, setModel] = useState<string>(CHAT_MODELS[1].id); // gemma par défaut
+  const [models, setModels] = useState<Model[]>([]);
+  const [model, setModel] = useState<string>("");
   const [loading, setLoading] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
+
+  const refreshConversations = useCallback(async () => {
+    try {
+      const r = await fetch("/api/conversations");
+      const d = await r.json();
+      setConversations(d?.conversations ?? []);
+    } catch {
+      /* silencieux */
+    }
+  }, []);
+
+  // Modèles disponibles + liste des conversations au montage (setState après await).
+  useEffect(() => {
+    (async () => {
+      try {
+        const r = await fetch("/api/models");
+        const d = await r.json();
+        const list: Model[] = d?.models ?? [];
+        setModels(list);
+        setModel((m) => m || list[0]?.id || "");
+      } catch {
+        setModels([]);
+      }
+      await refreshConversations();
+    })();
+  }, [refreshConversations]);
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
 
+  function newConversation() {
+    setActiveId(null);
+    setMessages([]);
+  }
+
+  async function openConversation(c: Conversation) {
+    setActiveId(c.id);
+    if (models.some((m) => m.id === c.model)) setModel(c.model);
+    try {
+      const r = await fetch(`/api/conversations/${c.id}`);
+      const d = await r.json();
+      setMessages(
+        (d?.messages ?? []).map((m: Msg) => ({ role: m.role, content: m.content })),
+      );
+    } catch {
+      toast.error("Chargement de la conversation impossible");
+    }
+  }
+
+  async function removeConversation(id: string) {
+    try {
+      await fetch(`/api/conversations/${id}`, { method: "DELETE" });
+      if (activeId === id) newConversation();
+      refreshConversations();
+    } catch {
+      toast.error("Suppression impossible");
+    }
+  }
+
   async function send() {
     const text = input.trim();
-    if (!text || loading) return;
+    if (!text || loading || !model) return;
     const next = [...messages, { role: "user" as const, content: text }];
     setMessages(next);
     setInput("");
@@ -50,14 +109,17 @@ export function Chat() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages: next }),
+        body: JSON.stringify({ model, messages: next, conversationId: activeId }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "erreur");
       setMessages((m) => [...m, { role: "assistant", content: data.reply }]);
+      if (data.conversationId && data.conversationId !== activeId) {
+        setActiveId(data.conversationId);
+      }
+      refreshConversations();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "Échec de la requête");
-      // retire le message resté sans réponse pour pouvoir réessayer
       setMessages((m) => m.slice(0, -1));
       setInput(text);
     } finally {
@@ -73,19 +135,77 @@ export function Chat() {
   }
 
   return (
-    <div className="flex h-[calc(100dvh-7rem)] flex-col gap-4">
-      <div className="flex items-center justify-between">
+    <div className="flex h-[calc(100dvh-9rem)] gap-4">
+      {/* Rail des conversations */}
+      <aside className="hidden w-64 shrink-0 flex-col gap-2 md:flex">
+        <Button variant="outline" className="justify-start" onClick={newConversation}>
+          <Plus className="size-4" />
+          Nouvelle conversation
+        </Button>
+        <div className="flex-1 space-y-1 overflow-y-auto">
+          {conversations.length === 0 ? (
+            <p className="px-2 py-4 text-xs text-muted-foreground">
+              Aucune conversation enregistrée.
+            </p>
+          ) : (
+            conversations.map((c) => (
+              <div
+                key={c.id}
+                className={cn(
+                  "group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm",
+                  activeId === c.id ? "bg-accent" : "hover:bg-accent/50",
+                )}
+              >
+                <button
+                  className="min-w-0 flex-1 truncate text-left"
+                  onClick={() => openConversation(c)}
+                  title={c.title}
+                >
+                  {c.title}
+                </button>
+                <AlertDialog>
+                  <AlertDialogTrigger className="opacity-0 group-hover:opacity-100">
+                    <Trash2 className="size-4 text-muted-foreground hover:text-destructive" />
+                  </AlertDialogTrigger>
+                  <AlertDialogContent>
+                    <AlertDialogHeader>
+                      <AlertDialogTitle>Supprimer la conversation ?</AlertDialogTitle>
+                      <AlertDialogDescription>
+                        « {c.title} » sera définitivement supprimée.
+                      </AlertDialogDescription>
+                    </AlertDialogHeader>
+                    <AlertDialogFooter>
+                      <AlertDialogCancel>Annuler</AlertDialogCancel>
+                      <AlertDialogAction onClick={() => removeConversation(c.id)}>
+                        Supprimer
+                      </AlertDialogAction>
+                    </AlertDialogFooter>
+                  </AlertDialogContent>
+                </AlertDialog>
+              </div>
+            ))
+          )}
+        </div>
+      </aside>
+
+      {/* Conversation active */}
+      <div className="flex min-w-0 flex-1 flex-col gap-4">
         <Select
           value={model}
           onValueChange={(v) => {
             if (v) setModel(v);
           }}
+          disabled={models.length === 0}
         >
           <SelectTrigger className="w-52">
-            <SelectValue />
+            <SelectValue
+              placeholder={
+                models.length === 0 ? "Aucun modèle disponible" : "Modèle"
+              }
+            />
           </SelectTrigger>
           <SelectContent>
-            {CHAT_MODELS.map((m) => (
+            {models.map((m) => (
               <SelectItem key={m.id} value={m.id}>
                 {m.label}
               </SelectItem>
@@ -93,81 +213,61 @@ export function Chat() {
           </SelectContent>
         </Select>
 
-        <AlertDialog>
-          <AlertDialogTrigger
-            disabled={messages.length === 0}
-            className="inline-flex items-center gap-2 rounded-md border px-3 py-2 text-sm hover:bg-accent disabled:opacity-50"
-          >
-            <Plus className="size-4" />
-            Nouvelle conversation
-          </AlertDialogTrigger>
-          <AlertDialogContent>
-            <AlertDialogHeader>
-              <AlertDialogTitle>Nouvelle conversation ?</AlertDialogTitle>
-              <AlertDialogDescription>
-                L&apos;historique courant sera effacé.
-              </AlertDialogDescription>
-            </AlertDialogHeader>
-            <AlertDialogFooter>
-              <AlertDialogCancel>Annuler</AlertDialogCancel>
-              <AlertDialogAction onClick={() => setMessages([])}>
-                Effacer
-              </AlertDialogAction>
-            </AlertDialogFooter>
-          </AlertDialogContent>
-        </AlertDialog>
-      </div>
-
-      <div className="flex-1 space-y-4 overflow-y-auto rounded-lg border bg-card p-4">
-        {messages.length === 0 ? (
-          <p className="pt-10 text-center text-sm text-muted-foreground">
-            Démarrez la conversation — Claude (forfait) ou un modèle local.
-          </p>
-        ) : (
-          messages.map((m, i) => (
-            <div
-              key={i}
-              className={cn(
-                "flex",
-                m.role === "user" ? "justify-end" : "justify-start",
-              )}
-            >
+        <div className="flex-1 space-y-4 overflow-y-auto rounded-lg border bg-card p-4">
+          {messages.length === 0 ? (
+            <p className="pt-10 text-center text-sm text-muted-foreground">
+              Démarrez la conversation — Claude (forfait) ou un modèle local.
+            </p>
+          ) : (
+            messages.map((m, i) => (
               <div
+                key={i}
                 className={cn(
-                  "max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm",
-                  m.role === "user"
-                    ? "bg-primary text-primary-foreground"
-                    : "bg-muted",
+                  "flex",
+                  m.role === "user" ? "justify-end" : "justify-start",
                 )}
               >
-                {m.content}
+                <div
+                  className={cn(
+                    "max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm",
+                    m.role === "user"
+                      ? "bg-primary text-primary-foreground"
+                      : "bg-muted",
+                  )}
+                >
+                  {m.content}
+                </div>
+              </div>
+            ))
+          )}
+          {loading ? (
+            <div className="flex justify-start">
+              <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
+                <Loader2 className="size-4 animate-spin" />
+                Réflexion…
               </div>
             </div>
-          ))
-        )}
-        {loading ? (
-          <div className="flex justify-start">
-            <div className="flex items-center gap-2 rounded-lg bg-muted px-3 py-2 text-sm text-muted-foreground">
-              <Loader2 className="size-4 animate-spin" />
-              Réflexion…
-            </div>
-          </div>
-        ) : null}
-        <div ref={bottomRef} />
-      </div>
+          ) : null}
+          <div ref={bottomRef} />
+        </div>
 
-      <div className="flex items-end gap-2">
-        <Textarea
-          value={input}
-          onChange={(e) => setInput(e.target.value)}
-          onKeyDown={onKeyDown}
-          placeholder="Votre message… (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)"
-          className="min-h-[3rem] resize-none"
-          disabled={loading}
-        />
-        <Button onClick={send} disabled={loading || !input.trim()} size="icon">
-          <Send className="size-4" />
-        </Button>
+        <div className="flex items-end gap-2">
+          <Textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={onKeyDown}
+            placeholder="Votre message… (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)"
+            className="min-h-[3rem] resize-none"
+            disabled={loading}
+          />
+          <Button
+            onClick={send}
+            disabled={loading || !input.trim() || !model}
+            size="icon"
+          >
+            <Send className="size-4" />
+          </Button>
+        </div>
       </div>
     </div>
   );
