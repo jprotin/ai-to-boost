@@ -1,20 +1,13 @@
 "use client";
 
-import { Loader2, Plus, Send, Trash2 } from "lucide-react";
+import { Loader2, MessagesSquare, Send } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "@/components/ui/alert-dialog";
+  ConversationList,
+  type Conversation,
+} from "@/components/conversation-list";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -23,11 +16,17 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetTrigger,
+} from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 
 type Msg = { role: "user" | "assistant"; content: string };
 type Model = { id: string; label: string };
-type Conversation = { id: string; title: string; model: string };
 
 export function Chat() {
   const [conversations, setConversations] = useState<Conversation[]>([]);
@@ -37,6 +36,7 @@ export function Chat() {
   const [models, setModels] = useState<Model[]>([]);
   const [model, setModel] = useState<string>("");
   const [loading, setLoading] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
   const refreshConversations = useCallback(async () => {
@@ -49,7 +49,6 @@ export function Chat() {
     }
   }, []);
 
-  // Modèles disponibles + liste des conversations au montage (setState après await).
   useEffect(() => {
     (async () => {
       try {
@@ -72,10 +71,12 @@ export function Chat() {
   function newConversation() {
     setActiveId(null);
     setMessages([]);
+    setSheetOpen(false);
   }
 
   async function openConversation(c: Conversation) {
     setActiveId(c.id);
+    setSheetOpen(false);
     if (models.some((m) => m.id === c.model)) setModel(c.model);
     try {
       const r = await fetch(`/api/conversations/${c.id}`);
@@ -134,84 +135,61 @@ export function Chat() {
     }
   }
 
+  const list = (
+    <ConversationList
+      conversations={conversations}
+      activeId={activeId}
+      onNew={newConversation}
+      onSelect={openConversation}
+      onDelete={removeConversation}
+    />
+  );
+
   return (
     <div className="flex h-[calc(100dvh-9rem)] gap-4">
-      {/* Rail des conversations */}
-      <aside className="hidden w-64 shrink-0 flex-col gap-2 md:flex">
-        <Button variant="outline" className="justify-start" onClick={newConversation}>
-          <Plus className="size-4" />
-          Nouvelle conversation
-        </Button>
-        <div className="flex-1 space-y-1 overflow-y-auto">
-          {conversations.length === 0 ? (
-            <p className="px-2 py-4 text-xs text-muted-foreground">
-              Aucune conversation enregistrée.
-            </p>
-          ) : (
-            conversations.map((c) => (
-              <div
-                key={c.id}
-                className={cn(
-                  "group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm",
-                  activeId === c.id ? "bg-accent" : "hover:bg-accent/50",
-                )}
-              >
-                <button
-                  className="min-w-0 flex-1 truncate text-left"
-                  onClick={() => openConversation(c)}
-                  title={c.title}
-                >
-                  {c.title}
-                </button>
-                <AlertDialog>
-                  <AlertDialogTrigger className="opacity-0 group-hover:opacity-100">
-                    <Trash2 className="size-4 text-muted-foreground hover:text-destructive" />
-                  </AlertDialogTrigger>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Supprimer la conversation ?</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        « {c.title} » sera définitivement supprimée.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel>Annuler</AlertDialogCancel>
-                      <AlertDialogAction onClick={() => removeConversation(c.id)}>
-                        Supprimer
-                      </AlertDialogAction>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
-              </div>
-            ))
-          )}
-        </div>
-      </aside>
+      {/* Rail conversations — desktop */}
+      <aside className="hidden w-64 shrink-0 md:block">{list}</aside>
 
-      {/* Conversation active */}
-      <div className="flex min-w-0 flex-1 flex-col gap-4">
-        <Select
-          value={model}
-          onValueChange={(v) => {
-            if (v) setModel(v);
-          }}
-          disabled={models.length === 0}
-        >
-          <SelectTrigger className="w-52">
-            <SelectValue
-              placeholder={
-                models.length === 0 ? "Aucun modèle disponible" : "Modèle"
-              }
-            />
-          </SelectTrigger>
-          <SelectContent>
-            {models.map((m) => (
-              <SelectItem key={m.id} value={m.id}>
-                {m.label}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
+      {/* Conversation active — largeur plafonnée, alignée au rail */}
+      <div className="flex min-w-0 w-full max-w-3xl flex-1 flex-col gap-4">
+        <div className="flex items-center gap-2">
+          {/* Déclencheur conversations — mobile */}
+          <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+            <SheetTrigger className="inline-flex size-9 items-center justify-center rounded-md border hover:bg-accent md:hidden">
+              <MessagesSquare className="size-4" />
+              <span className="sr-only">Conversations</span>
+            </SheetTrigger>
+            <SheetContent side="left" className="w-72 p-3">
+              <SheetHeader className="p-1">
+                <SheetTitle>Conversations</SheetTitle>
+              </SheetHeader>
+              {list}
+            </SheetContent>
+          </Sheet>
+
+          <Select
+            value={model}
+            onValueChange={(v) => {
+              if (v) setModel(v);
+            }}
+            disabled={models.length === 0}
+          >
+            <SelectTrigger className="w-52">
+              <SelectValue
+                placeholder={
+                  models.length === 0 ? "Aucun modèle disponible" : "Modèle"
+                }
+              />
+            </SelectTrigger>
+            <SelectContent>
+              {models.map((m) => (
+                <SelectItem key={m.id} value={m.id}>
+                  {m.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
 
         <div className="flex-1 space-y-4 overflow-y-auto rounded-lg border bg-card p-4">
           {messages.length === 0 ? (
