@@ -183,6 +183,8 @@ services:
       - ./services/webui/webui.env
     environment:
       AGENT_TOKEN: ${AGENT_TOKEN}
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN}
+      LITELLM_KEY: ${LITELLM_MASTER_KEY}
       WORKER_URL: http://host.docker.internal:8089
       BRIDGE_URL: http://host.docker.internal:8088
       LITELLM_URL: http://litellm:4000

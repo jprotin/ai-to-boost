@@ -15,3 +15,6 @@ export const BACKEND = {
 };
 
 export const AGENT_TOKEN = process.env.AGENT_TOKEN ?? "";
+// Token Bearer du bridge claude -p et clé maître LiteLLM (chat). Côté serveur uniquement.
+export const BRIDGE_TOKEN = process.env.BRIDGE_TOKEN ?? "";
+export const LITELLM_KEY = process.env.LITELLM_KEY ?? "";
