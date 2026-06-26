@@ -1033,6 +1033,45 @@ def resume_pipeline_by_target(decision, return_target):
     return resume_pipeline(pid, decision)
 
 
+def _registry_path():
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    return os.path.join(cfg, "ai-to-boost", "projects.json")
+
+
+def _list_projects():
+    """Projets du registre ai2b, enrichis du statut du dernier pipeline de chacun
+    (lecture seule pour la web-app, ADR 0005 — source de vérité unique côté worker)."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return []
+    active = data.get("active")
+    out = []
+    for name, p in (data.get("projects") or {}).items():
+        path = p.get("path") or ""
+        entry = {
+            "name": name,
+            "path": path,
+            "base_branch": p.get("base_branch"),
+            "last_pipeline": p.get("last_pipeline"),
+            "active": name == active,
+            "exists": bool(path) and os.path.isdir(path),
+        }
+        try:
+            pj = os.path.join(path, ".ai-to-boost", "pipeline.json")
+            with open(pj, encoding="utf-8") as f:
+                st = json.load(f) or {}
+            entry["pipeline_status"] = st.get("status")
+            entry["pipeline_phase"] = st.get("phase")
+        except Exception:
+            pass
+        out.append(entry)
+    return out
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -1051,6 +1090,12 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._send(200, {"status": "ok", "model": MODEL})
+            return
+        if self.path == "/projects":
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            self._send(200, {"projects": _list_projects()})
             return
         if self.path.startswith("/jobs/"):
             if not self._auth_ok():

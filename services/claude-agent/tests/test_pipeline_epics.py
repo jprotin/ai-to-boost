@@ -7,6 +7,7 @@ parser bmad-ui. Lancer : python3 services/claude-agent/tests/test_pipeline_epics
 """
 
 import importlib.util
+import json
 import os
 import re
 import sys
@@ -230,6 +231,46 @@ def test_resume_by_target_sans_pipeline():
     finally:
         m.PIPELINES.clear()
         m.PIPELINES.update(saved)
+
+
+def test_list_projects():
+    """Liste des projets : actif, existence, statut du dernier pipeline enrichi."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="reg-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        proj = os.path.join(d, "proj")
+        os.makedirs(os.path.join(proj, ".ai-to-boost"))
+        with open(os.path.join(proj, ".ai-to-boost", "pipeline.json"), "w") as f:
+            json.dump({"status": "done", "phase": "implementation"}, f)
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump(
+                {
+                    "active": "p1",
+                    "projects": {
+                        "p1": {
+                            "path": proj,
+                            "base_branch": "develop",
+                            "last_pipeline": "x",
+                        },
+                        "p2": {"path": "/nope", "base_branch": "main"},
+                    },
+                },
+                f,
+            )
+        by = {r["name"]: r for r in m._list_projects()}
+        assert by["p1"]["active"] is True, by["p1"]
+        assert by["p1"]["exists"] is True
+        assert by["p1"]["pipeline_status"] == "done"
+        assert by["p2"]["active"] is False
+        assert by["p2"]["exists"] is False
+        assert "pipeline_status" not in by["p2"]  # pas de pipeline.json
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
 
 
 def main():
