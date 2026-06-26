@@ -3,11 +3,11 @@
 import { useState } from "react";
 import { StatusBadge } from "@/components/status-badge";
 import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import {
   Dialog,
   DialogContent,
@@ -22,42 +22,32 @@ export function ProjectBoard({ board }: { board: Board }) {
 
   return (
     <>
-      <Accordion
-        multiple
-        defaultValue={board.epics.map((e) => e.n)}
-        className="rounded-lg border"
-      >
+      <div className="grid gap-4 lg:grid-cols-2">
         {board.epics.map((e) => (
-          <AccordionItem key={e.n} value={e.n} className="px-4">
-            <AccordionTrigger>
-              <span className="flex items-center gap-2">
-                <span className="font-medium">
+          <Card key={e.n} className="shadow-sm">
+            <CardHeader className="pb-3">
+              <div className="flex items-center justify-between gap-2">
+                <CardTitle className="text-base">
                   Epic {e.n} — {e.title}
-                </span>
+                </CardTitle>
                 <StatusBadge status={e.status} />
-                <span className="text-xs text-muted-foreground">
-                  {e.stories.length} stories
-                </span>
-              </span>
-            </AccordionTrigger>
-            <AccordionContent>
-              <ul className="space-y-1 pb-2">
-                {e.stories.map((s) => (
-                  <li key={s.id}>
-                    <button
-                      onClick={() => setStory(s)}
-                      className="flex w-full items-center justify-between gap-2 rounded-md px-2 py-1.5 text-left text-sm hover:bg-accent"
-                    >
-                      <span className="min-w-0 truncate">{s.title}</span>
-                      <StatusBadge status={s.status} />
-                    </button>
-                  </li>
-                ))}
-              </ul>
-            </AccordionContent>
-          </AccordionItem>
+              </div>
+            </CardHeader>
+            <CardContent className="space-y-1.5">
+              {e.stories.map((s) => (
+                <button
+                  key={s.id}
+                  onClick={() => setStory(s)}
+                  className="flex w-full items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-left text-sm transition-colors hover:bg-accent"
+                >
+                  <span className="min-w-0 truncate">{s.title}</span>
+                  <StatusBadge status={s.status} />
+                </button>
+              ))}
+            </CardContent>
+          </Card>
         ))}
-      </Accordion>
+      </div>
 
       <Dialog open={Boolean(story)} onOpenChange={(o) => !o && setStory(null)}>
         <DialogContent className="max-w-2xl">

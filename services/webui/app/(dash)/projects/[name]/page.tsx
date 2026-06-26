@@ -23,22 +23,24 @@ export default async function ProjectDetailPage({
 
   return (
     <div className="space-y-6">
-      <div className="flex flex-wrap items-center gap-3">
-        <h1 className="text-2xl font-semibold">{projectName}</h1>
-        {board?.pipeline?.status ? (
-          <StatusBadge status={board.pipeline.status} />
-        ) : null}
-        {board?.pipeline?.phase ? (
-          <span className="text-sm text-muted-foreground">
-            phase : {board.pipeline.phase}
-          </span>
-        ) : null}
-        {board?.pipeline?.branch ? (
-          <code className="text-xs text-muted-foreground">
-            {board.pipeline.branch}
-          </code>
-        ) : null}
-      </div>
+      <Card className="shadow-sm">
+        <CardContent className="flex flex-wrap items-center gap-3 py-4">
+          <h1 className="text-xl font-semibold">{projectName}</h1>
+          {board?.pipeline?.status ? (
+            <StatusBadge status={board.pipeline.status} />
+          ) : null}
+          {board?.pipeline?.phase ? (
+            <span className="text-sm text-muted-foreground">
+              phase : {board.pipeline.phase}
+            </span>
+          ) : null}
+          {board?.pipeline?.branch ? (
+            <code className="ml-auto text-xs text-muted-foreground">
+              {board.pipeline.branch}
+            </code>
+          ) : null}
+        </CardContent>
+      </Card>
 
       {error ? (
         <Card>

@@ -1,30 +1,13 @@
 import Link from "next/link";
 import { getProjects, type Project } from "@/lib/api";
+import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent } from "@/components/ui/card";
 import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-
-function statusBadge(p: Project) {
-  const s = p.pipeline_status;
-  if (!s) return <Badge variant="outline">—</Badge>;
-  const variant =
-    s === "done"
-      ? "default"
-      : s === "error"
-        ? "destructive"
-        : s === "stopped"
-          ? "outline"
-          : "secondary";
-  const label = p.pipeline_phase ? `${s} · ${p.pipeline_phase}` : s;
-  return <Badge variant={variant}>{label}</Badge>;
-}
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 
 export default async function ProjectsPage() {
   let projects: Project[] = [];
@@ -45,61 +28,57 @@ export default async function ProjectsPage() {
       </div>
 
       {error ? (
-        <Card>
+        <Card className="shadow-sm">
           <CardContent className="py-10 text-center text-sm text-destructive">
             Impossible de charger les projets — {error}
           </CardContent>
         </Card>
       ) : projects.length === 0 ? (
-        <Card>
+        <Card className="shadow-sm">
           <CardContent className="py-10 text-center text-sm text-muted-foreground">
             Aucun projet enregistré. Créez-en un avec{" "}
             <code className="rounded bg-muted px-1">ai2b new &lt;nom&gt;</code>.
           </CardContent>
         </Card>
       ) : (
-        <div className="rounded-lg border">
-          <Table>
-            <TableHeader>
-              <TableRow>
-                <TableHead>Nom</TableHead>
-                <TableHead>Base</TableHead>
-                <TableHead>Dernier pipeline</TableHead>
-                <TableHead className="text-right">État</TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {projects.map((p) => (
-                <TableRow key={p.name}>
-                  <TableCell className="font-medium">
-                    <Link
-                      href={`/projects/${encodeURIComponent(p.name)}`}
-                      className="hover:underline"
-                    >
-                      {p.name}
-                    </Link>
-                    {p.active ? (
-                      <Badge variant="secondary" className="ml-2">
-                        actif
-                      </Badge>
-                    ) : null}
-                    {!p.exists ? (
-                      <Badge variant="destructive" className="ml-2">
-                        absent
-                      </Badge>
-                    ) : null}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {p.base_branch ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-muted-foreground">
-                    {p.last_pipeline ?? "—"}
-                  </TableCell>
-                  <TableCell className="text-right">{statusBadge(p)}</TableCell>
-                </TableRow>
-              ))}
-            </TableBody>
-          </Table>
+        <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+          {projects.map((p) => (
+            <Link
+              key={p.name}
+              href={`/projects/${encodeURIComponent(p.name)}`}
+              className="group"
+            >
+              <Card className="h-full shadow-sm transition-shadow group-hover:border-ring/40 group-hover:shadow-md">
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between gap-2">
+                    <CardTitle className="truncate text-base">{p.name}</CardTitle>
+                    {p.active ? <Badge variant="secondary">actif</Badge> : null}
+                  </div>
+                </CardHeader>
+                <CardContent className="space-y-2 text-sm">
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Base</span>
+                    <code className="text-xs">{p.base_branch ?? "—"}</code>
+                  </div>
+                  <div className="flex items-center justify-between">
+                    <span className="text-muted-foreground">Pipeline</span>
+                    <StatusBadge
+                      status={
+                        p.pipeline_status
+                          ? p.pipeline_phase
+                            ? `${p.pipeline_status} · ${p.pipeline_phase}`
+                            : p.pipeline_status
+                          : null
+                      }
+                    />
+                  </div>
+                  {!p.exists ? (
+                    <Badge variant="destructive">répertoire absent</Badge>
+                  ) : null}
+                </CardContent>
+              </Card>
+            </Link>
+          ))}
         </div>
       )}
     </div>
