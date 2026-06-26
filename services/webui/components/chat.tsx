@@ -28,7 +28,7 @@ import { Textarea } from "@/components/ui/textarea";
 type Msg = { role: "user" | "assistant"; content: string };
 type Model = { id: string; label: string };
 
-export function Chat() {
+export function Chat({ project }: { project?: string }) {
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
   const [messages, setMessages] = useState<Msg[]>([]);
@@ -41,13 +41,16 @@ export function Chat() {
 
   const refreshConversations = useCallback(async () => {
     try {
-      const r = await fetch("/api/conversations");
+      const url = project
+        ? `/api/conversations?project=${encodeURIComponent(project)}`
+        : "/api/conversations";
+      const r = await fetch(url);
       const d = await r.json();
       setConversations(d?.conversations ?? []);
     } catch {
       /* silencieux */
     }
-  }, []);
+  }, [project]);
 
   useEffect(() => {
     (async () => {
@@ -110,7 +113,12 @@ export function Chat() {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ model, messages: next, conversationId: activeId }),
+        body: JSON.stringify({
+          model,
+          messages: next,
+          conversationId: activeId,
+          project,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data?.error ?? "erreur");

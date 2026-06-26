@@ -30,6 +30,12 @@ function createDb() {
     );
     CREATE INDEX IF NOT EXISTS idx_messages_conv ON messages(conversation_id);
   `);
+  // Migration idempotente : colonne project (chat dédié projet, C3.4) sur une base existante.
+  try {
+    sqlite.exec("ALTER TABLE conversations ADD COLUMN project TEXT");
+  } catch {
+    /* colonne déjà présente */
+  }
   return drizzle(sqlite, { schema });
 }
 

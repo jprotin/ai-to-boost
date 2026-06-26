@@ -4,10 +4,11 @@ import { listConversations } from "@/lib/db/queries";
 
 export const runtime = "nodejs";
 
-export async function GET() {
+export async function GET(req: Request) {
   const session = await auth();
   if (!session?.user) {
     return NextResponse.json({ error: "non authentifié" }, { status: 401 });
   }
-  return NextResponse.json({ conversations: listConversations() });
+  const project = new URL(req.url).searchParams.get("project");
+  return NextResponse.json({ conversations: listConversations(project) });
 }

@@ -1,13 +1,17 @@
 import "server-only";
-import { desc, eq } from "drizzle-orm";
+import { desc, eq, isNull } from "drizzle-orm";
 import { db, schema } from "./index";
 
 const { conversations, messages } = schema;
 
-export function listConversations() {
+// project=null → chat général (project IS NULL) ; sinon conversations du projet.
+export function listConversations(project?: string | null) {
   return db
     .select()
     .from(conversations)
+    .where(
+      project ? eq(conversations.project, project) : isNull(conversations.project),
+    )
     .orderBy(desc(conversations.updatedAt))
     .all();
 }
@@ -31,7 +35,11 @@ export function conversationExists(id: string) {
   );
 }
 
-export function createConversation(model: string, title: string) {
+export function createConversation(
+  model: string,
+  title: string,
+  project?: string | null,
+) {
   const now = Date.now();
   const id = crypto.randomUUID();
   db.insert(conversations)
@@ -39,6 +47,7 @@ export function createConversation(model: string, title: string) {
       id,
       title: title.slice(0, 80) || "Conversation",
       model,
+      project: project ?? null,
       createdAt: now,
       updatedAt: now,
     })

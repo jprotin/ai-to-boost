@@ -1248,8 +1248,40 @@ class Handler(BaseHTTPRequestHandler):
             self._post_resume_by_target()
         elif self.path.startswith("/pipelines/") and self.path.endswith("/resume"):
             self._post_resume()
+        elif self.path.startswith("/projects/") and self.path.endswith("/run"):
+            self._post_project_run()
         else:
             self._send(404, {"error": "not found"})
+
+    def _post_project_run(self):
+        """Lance un pipeline sur un projet nommé (résout le repo via le registre)."""
+        name = urllib.parse.unquote(
+            self.path[len("/projects/") : -len("/run")].strip("/")
+        )
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            self._send(400, {"error": "missing 'prompt'"})
+            return
+        try:
+            with open(_registry_path(), encoding="utf-8") as f:
+                p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+        except Exception:
+            p = {}
+        if not p.get("path"):
+            self._send(404, {"error": "projet inconnu"})
+            return
+        try:
+            repo = _validate_repo(p["path"])
+        except ValueError as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        pid = start_pipeline(prompt, repo, data.get("return_target"))
+        self._send(202, {"pipeline_id": pid, "status": "accepted"})
 
     def _post_job(self):
         try:
