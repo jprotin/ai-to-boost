@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import threading
+import urllib.parse
 import urllib.request
 import uuid
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -1033,6 +1034,146 @@ def resume_pipeline_by_target(decision, return_target):
     return resume_pipeline(pid, decision)
 
 
+def _registry_path():
+    cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
+        os.path.expanduser("~"), ".config"
+    )
+    return os.path.join(cfg, "ai-to-boost", "projects.json")
+
+
+def _list_projects():
+    """Projets du registre ai2b, enrichis du statut du dernier pipeline de chacun
+    (lecture seule pour la web-app, ADR 0005 — source de vérité unique côté worker)."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            data = json.load(f) or {}
+    except Exception:
+        return []
+    active = data.get("active")
+    out = []
+    for name, p in (data.get("projects") or {}).items():
+        path = p.get("path") or ""
+        entry = {
+            "name": name,
+            "path": path,
+            "base_branch": p.get("base_branch"),
+            "last_pipeline": p.get("last_pipeline"),
+            "active": name == active,
+            "exists": bool(path) and os.path.isdir(path),
+        }
+        try:
+            pj = os.path.join(path, ".ai-to-boost", "pipeline.json")
+            with open(pj, encoding="utf-8") as f:
+                st = json.load(f) or {}
+            entry["pipeline_status"] = st.get("status")
+            entry["pipeline_phase"] = st.get("phase")
+        except Exception:
+            pass
+        out.append(entry)
+    return out
+
+
+_EPIC_STATUS_RE = re.compile(r"^\s+epic-(\d+):\s*(\S+)")
+
+
+def _read_project_text(repo, branch, worktree, rel):
+    """Lit un fichier du projet dans l'ordre : worktree pl-<pid> → branche pipeline
+    (git show) → working tree. Chaîne vide si introuvable."""
+    if worktree:
+        wp = os.path.join(worktree, rel)
+        if os.path.isfile(wp):
+            with open(wp, encoding="utf-8") as f:
+                return f.read()
+    if branch:
+        try:
+            return _git(repo, "show", f"{branch}:{rel}")
+        except Exception:
+            pass
+    p = os.path.join(repo, rel)
+    if os.path.isfile(p):
+        with open(p, encoding="utf-8") as f:
+            return f.read()
+    return ""
+
+
+def _project_board(name):
+    """Board d'un projet (epics/stories + statuts + détail) pour la web-app (ADR 0005).
+    Source : sprint-status.yaml + epics.md du worktree/branche/working tree. None si projet
+    inconnu/absent."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+    except Exception:
+        p = {}
+    repo = p.get("path") or ""
+    if not repo or not os.path.isdir(repo):
+        return None
+
+    pipe, branch, worktree = {}, None, None
+    try:
+        with open(
+            os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
+        ) as f:
+            pj = json.load(f) or {}
+        branch, worktree = pj.get("branch"), pj.get("worktree")
+        pipe = {
+            "id": pj.get("pipeline_id"),
+            "status": pj.get("status"),
+            "phase": pj.get("phase"),
+            "branch": branch,
+            "prompt": pj.get("prompt"),  # besoin original (description du projet)
+        }
+    except Exception:
+        pass
+
+    sprint = _read_project_text(repo, branch, worktree, SPRINT_REL)
+    epics_md = _read_project_text(
+        repo, branch, worktree, "_bmad-output/planning-artifacts/epics.md"
+    )
+    story_status, epic_status = {}, {}
+    for line in sprint.splitlines():
+        sm = _STORY_LINE_RE.match(line.rstrip("\n"))
+        if sm:
+            story_status[sm.group(2)] = sm.group(3)
+        em = _EPIC_STATUS_RE.match(line.rstrip("\n"))
+        if em:
+            epic_status[em.group(1)] = em.group(2)
+
+    epics_out = []
+    for e in _parse_epics(epics_md):
+        stories = []
+        for s in e["stories"]:
+            sid = f"{e['n']}-{s['m']}-{_slugify(s['title'])}"
+            status = story_status.get(sid)
+            if status is None:  # tolère un slug divergent : match par préfixe N-M-
+                prefix = f"{e['n']}-{s['m']}-"
+                for k, v in story_status.items():
+                    if k.startswith(prefix):
+                        sid, status = k, v
+                        break
+            detail = _read_project_text(repo, branch, worktree, f"{IMPL_DIR}/{sid}.md")
+            stories.append(
+                {
+                    "id": sid,
+                    "title": s["title"],
+                    "status": status or "backlog",
+                    "detail": detail,
+                }
+            )
+        epics_out.append(
+            {
+                "n": e["n"],
+                "title": e["title"],
+                "status": epic_status.get(str(e["n"]), "backlog"),
+                "stories": stories,
+            }
+        )
+    phases = [
+        {"key": p["key"], "persona": p["persona"], "model": p["model"]} for p in PHASES
+    ]
+    return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
+
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, *args):
         pass
@@ -1051,6 +1192,24 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if self.path == "/health":
             self._send(200, {"status": "ok", "model": MODEL})
+            return
+        if self.path == "/projects":
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            self._send(200, {"projects": _list_projects()})
+            return
+        if self.path.startswith("/projects/") and self.path.endswith("/board"):
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            name = urllib.parse.unquote(
+                self.path[len("/projects/") : -len("/board")].strip("/")
+            )
+            board = _project_board(name)
+            self._send(200, board) if board else self._send(
+                404, {"error": "projet inconnu"}
+            )
             return
         if self.path.startswith("/jobs/"):
             if not self._auth_ok():
@@ -1093,8 +1252,70 @@ class Handler(BaseHTTPRequestHandler):
             self._post_resume_by_target()
         elif self.path.startswith("/pipelines/") and self.path.endswith("/resume"):
             self._post_resume()
+        elif self.path.startswith("/projects/") and self.path.endswith("/resume"):
+            self._post_project_resume()
+        elif self.path.startswith("/projects/") and self.path.endswith("/run"):
+            self._post_project_run()
         else:
             self._send(404, {"error": "not found"})
+
+    def _post_project_resume(self):
+        """Décision de jalon sur le pipeline courant d'un projet (résout le pid)."""
+        name = urllib.parse.unquote(
+            self.path[len("/projects/") : -len("/resume")].strip("/")
+        )
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        decision = (data.get("decision") or "").strip()
+        pid = None
+        try:
+            with open(_registry_path(), encoding="utf-8") as f:
+                p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+            with open(
+                os.path.join(p["path"], ".ai-to-boost", "pipeline.json"),
+                encoding="utf-8",
+            ) as f:
+                pid = (json.load(f) or {}).get("pipeline_id")
+        except Exception:
+            pid = None
+        if not pid:
+            self._send(404, {"error": "aucun pipeline pour ce projet"})
+            return
+        res = resume_pipeline(pid, decision)
+        self._send(400 if res.get("error") else 202, res)
+
+    def _post_project_run(self):
+        """Lance un pipeline sur un projet nommé (résout le repo via le registre)."""
+        name = urllib.parse.unquote(
+            self.path[len("/projects/") : -len("/run")].strip("/")
+        )
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        prompt = (data.get("prompt") or "").strip()
+        if not prompt:
+            self._send(400, {"error": "missing 'prompt'"})
+            return
+        try:
+            with open(_registry_path(), encoding="utf-8") as f:
+                p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+        except Exception:
+            p = {}
+        if not p.get("path"):
+            self._send(404, {"error": "projet inconnu"})
+            return
+        try:
+            repo = _validate_repo(p["path"])
+        except ValueError as exc:
+            self._send(400, {"error": str(exc)})
+            return
+        pid = start_pipeline(prompt, repo, data.get("return_target"))
+        self._send(202, {"pipeline_id": pid, "status": "accepted"})
 
     def _post_job(self):
         try:

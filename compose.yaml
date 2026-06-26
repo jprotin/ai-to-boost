@@ -23,6 +23,7 @@ volumes:
   whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
   n8n-data: # données n8n (/home/node/.n8n : config, clés, binaires)
   qdrant-data: # base vectorielle Qdrant (RAG)
+  webui-data: # SQLite des conversations de la web-app (ADR 0005)
 
 services:
   # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)
@@ -162,3 +163,32 @@ services:
       QDRANT__TELEMETRY_DISABLED: "true"
     volumes:
       - qdrant-data:/qdrant/storage
+
+  # ADR 0005 — web-app tour de contrôle (Next.js). Local-only (127.0.0.1). Le BFF
+  # (côté serveur) parle au worker/bridge (hôte) et à LiteLLM (réseau docker) ; le
+  # navigateur ne voit que le BFF (AGENT_TOKEN jamais exposé au client).
+  webui:
+    build:
+      context: ./services/webui
+    container_name: webui
+    restart: unless-stopped
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:3001:3000"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    # Secrets (dont le hash bcrypt contenant des '$') chargés littéralement via env_file
+    # pour éviter l'interpolation docker-compose ; topologie réseau en environment.
+    env_file:
+      - ./services/webui/webui.env
+    environment:
+      AGENT_TOKEN: ${AGENT_TOKEN}
+      BRIDGE_TOKEN: ${BRIDGE_TOKEN}
+      LITELLM_KEY: ${LITELLM_MASTER_KEY}
+      WORKER_URL: http://host.docker.internal:8089
+      BRIDGE_URL: http://host.docker.internal:8088
+      LITELLM_URL: http://litellm:4000
+      WEBUI_DB_PATH: /app/data/webui.db
+    volumes:
+      - webui-data:/app/data

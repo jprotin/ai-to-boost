@@ -141,6 +141,8 @@ repos:
     rev: v4.0.0-alpha.8
     hooks:
       - id: prettier
+        # services/webui = sous-projet Next.js autonome (prettier/eslint propres, ADR 0005).
+        exclude: ^services/webui/
         types_or:
           [javascript, jsx, ts, tsx, json, yaml, markdown, css, scss, html]
 
@@ -148,6 +150,7 @@ repos:
     rev: v9.14.0
     hooks:
       - id: eslint
+        exclude: ^services/webui/
         files: \.[jt]sx?$
         types: [file]
         additional_dependencies:

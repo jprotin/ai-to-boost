@@ -119,3 +119,6 @@ obj/
 *.so
 *.dylib
 *.exe
+
+# Secrets web-app (ADR 0005)
+services/webui/webui.env
