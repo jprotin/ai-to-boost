@@ -1,5 +1,11 @@
 # Runbook — bmad-ui (dashboard BMAD multi-projets, instance unique)
 
+> **⚠️ Déprécié (ADR 0005)** — la **web-app tour de contrôle** (`services/webui`, page
+> Projet) remplace bmad-ui : board epics/stories, détail, chat projet et **pilotage** du
+> pipeline (lancer / jalons) en un seul endroit. bmad-ui est conservé temporairement
+> (lecture seule, mono-projet) ; retrait prévu une fois la web-app éprouvée. Voir
+> [webui.md](webui.md).
+
 Visualiser les artefacts BMAD d'un projet (docs/PRD/architecture, epics, stories,
 sprint, analytics) via [bmad-ui](https://github.com/lorenzogm/bmad-ui), **installé une
 seule fois** et **focalisé sur le projet courant** par `bmad-start`.
