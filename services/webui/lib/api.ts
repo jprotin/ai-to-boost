@@ -24,6 +24,7 @@ export type Epic = {
   status: string;
   stories: Story[];
 };
+export type Phase = { key: string; persona: string; model: string };
 export type Board = {
   name: string;
   pipeline: {
@@ -31,8 +32,10 @@ export type Board = {
     status?: string;
     phase?: string;
     branch?: string;
+    prompt?: string;
   };
   epics: Epic[];
+  phases?: Phase[];
 };
 
 // Lecture des projets via l'API du worker (source de vérité unique, ADR 0005).

@@ -20,3 +20,11 @@ export const CHAT_MODELS = [
 
 export type ChatModel = (typeof CHAT_MODELS)[number];
 export type ChatModelId = ChatModel["id"];
+
+// Libellé court d'un modèle (identifiant worker/LiteLLM → affichage).
+export function modelLabel(id: string): string {
+  if (id === "claude") return "Claude";
+  if (id === "local-gemma") return "Gemma";
+  if (id === "local-qwen") return "Qwen";
+  return id;
+}

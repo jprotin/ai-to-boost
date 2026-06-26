@@ -1121,6 +1121,7 @@ def _project_board(name):
             "status": pj.get("status"),
             "phase": pj.get("phase"),
             "branch": branch,
+            "prompt": pj.get("prompt"),  # besoin original (description du projet)
         }
     except Exception:
         pass
@@ -1167,7 +1168,10 @@ def _project_board(name):
                 "stories": stories,
             }
         )
-    return {"name": name, "pipeline": pipe, "epics": epics_out}
+    phases = [
+        {"key": p["key"], "persona": p["persona"], "model": p["model"]} for p in PHASES
+    ]
+    return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1248,10 +1252,40 @@ class Handler(BaseHTTPRequestHandler):
             self._post_resume_by_target()
         elif self.path.startswith("/pipelines/") and self.path.endswith("/resume"):
             self._post_resume()
+        elif self.path.startswith("/projects/") and self.path.endswith("/resume"):
+            self._post_project_resume()
         elif self.path.startswith("/projects/") and self.path.endswith("/run"):
             self._post_project_run()
         else:
             self._send(404, {"error": "not found"})
+
+    def _post_project_resume(self):
+        """Décision de jalon sur le pipeline courant d'un projet (résout le pid)."""
+        name = urllib.parse.unquote(
+            self.path[len("/projects/") : -len("/resume")].strip("/")
+        )
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        decision = (data.get("decision") or "").strip()
+        pid = None
+        try:
+            with open(_registry_path(), encoding="utf-8") as f:
+                p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+            with open(
+                os.path.join(p["path"], ".ai-to-boost", "pipeline.json"),
+                encoding="utf-8",
+            ) as f:
+                pid = (json.load(f) or {}).get("pipeline_id")
+        except Exception:
+            pid = None
+        if not pid:
+            self._send(404, {"error": "aucun pipeline pour ce projet"})
+            return
+        res = resume_pipeline(pid, decision)
+        self._send(400 if res.get("error") else 202, res)
 
     def _post_project_run(self):
         """Lance un pipeline sur un projet nommé (résout le repo via le registre)."""

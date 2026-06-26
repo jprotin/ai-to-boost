@@ -1,6 +1,8 @@
 "use client";
 
 import { useState } from "react";
+import { Markdown } from "@/components/markdown";
+import { PersonaTag } from "@/components/persona-tag";
 import { StatusBadge } from "@/components/status-badge";
 import {
   Card,
@@ -19,6 +21,8 @@ import type { Board, Story } from "@/lib/api";
 
 export function ProjectBoard({ board }: { board: Board }) {
   const [story, setStory] = useState<Story | null>(null);
+  const epicsPhase = board.phases?.find((p) => p.key === "epics");
+  const implPhase = board.phases?.find((p) => p.key === "implementation");
 
   return (
     <>
@@ -32,6 +36,13 @@ export function ProjectBoard({ board }: { board: Board }) {
                 </CardTitle>
                 <StatusBadge status={e.status} />
               </div>
+              {epicsPhase ? (
+                <PersonaTag
+                  persona={epicsPhase.persona}
+                  model={epicsPhase.model}
+                  className="mt-1 w-fit"
+                />
+              ) : null}
             </CardHeader>
             <CardContent className="space-y-1.5">
               {e.stories.map((s) => (
@@ -41,7 +52,16 @@ export function ProjectBoard({ board }: { board: Board }) {
                   className="flex w-full items-center justify-between gap-2 rounded-md border bg-background px-3 py-2 text-left text-sm transition-colors hover:bg-accent"
                 >
                   <span className="min-w-0 truncate">{s.title}</span>
-                  <StatusBadge status={s.status} />
+                  <span className="flex shrink-0 items-center gap-2">
+                    {s.status !== "backlog" && implPhase ? (
+                      <PersonaTag
+                        persona={implPhase.persona}
+                        model={implPhase.model}
+                        compact
+                      />
+                    ) : null}
+                    <StatusBadge status={s.status} />
+                  </span>
                 </button>
               ))}
             </CardContent>
@@ -58,9 +78,15 @@ export function ProjectBoard({ board }: { board: Board }) {
               <code className="text-xs">{story?.id}</code>
             </DialogDescription>
           </DialogHeader>
-          <pre className="max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-md bg-muted p-3 text-sm">
-            {story?.detail?.trim() || "Aucun détail enregistré pour cette story."}
-          </pre>
+          <div className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3">
+            {story?.detail?.trim() ? (
+              <Markdown>{story.detail}</Markdown>
+            ) : (
+              <p className="text-sm text-muted-foreground">
+                Aucun détail enregistré pour cette story.
+              </p>
+            )}
+          </div>
         </DialogContent>
       </Dialog>
     </>

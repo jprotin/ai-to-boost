@@ -8,6 +8,7 @@ import {
   ConversationList,
   type Conversation,
 } from "@/components/conversation-list";
+import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -215,13 +216,17 @@ export function Chat({ project }: { project?: string }) {
               >
                 <div
                   className={cn(
-                    "max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm",
+                    "max-w-[80%] rounded-lg px-3 py-2 text-sm",
                     m.role === "user"
-                      ? "bg-primary text-primary-foreground"
+                      ? "whitespace-pre-wrap bg-primary text-primary-foreground"
                       : "bg-muted",
                   )}
                 >
-                  {m.content}
+                  {m.role === "user" ? (
+                    m.content
+                  ) : (
+                    <Markdown>{m.content}</Markdown>
+                  )}
                 </div>
               </div>
             ))

@@ -1,7 +1,6 @@
 import { notFound } from "next/navigation";
 import { getProjectBoard, type Board } from "@/lib/api";
 import { ProjectView } from "@/components/project-view";
-import { StatusBadge } from "@/components/status-badge";
 import { Card, CardContent } from "@/components/ui/card";
 
 export default async function ProjectDetailPage({
@@ -30,20 +29,16 @@ export default async function ProjectDetailPage({
   return (
     <div className="space-y-6">
       <Card className="shadow-sm">
-        <CardContent className="flex flex-wrap items-center gap-3 py-4">
+        <CardContent className="py-4">
           <h1 className="text-xl font-semibold">{projectName}</h1>
-          {view.pipeline?.status ? (
-            <StatusBadge status={view.pipeline.status} />
-          ) : null}
-          {view.pipeline?.phase ? (
-            <span className="text-sm text-muted-foreground">
-              phase : {view.pipeline.phase}
-            </span>
-          ) : null}
-          {view.pipeline?.branch ? (
-            <code className="ml-auto text-xs text-muted-foreground">
-              {view.pipeline.branch}
-            </code>
+          {view.pipeline?.prompt ? (
+            <p className="mt-1 text-sm text-muted-foreground">
+              {view.pipeline.prompt}
+            </p>
+          ) : !view.pipeline?.status ? (
+            <p className="mt-1 text-sm text-muted-foreground">
+              Aucun pipeline lancé — décrivez un besoin via « Lancer un pipeline ».
+            </p>
           ) : null}
         </CardContent>
       </Card>
