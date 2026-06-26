@@ -12,6 +12,29 @@ export type Project = {
   pipeline_phase?: string;
 };
 
+export type Story = {
+  id: string;
+  title: string;
+  status: string;
+  detail?: string;
+};
+export type Epic = {
+  n: number;
+  title: string;
+  status: string;
+  stories: Story[];
+};
+export type Board = {
+  name: string;
+  pipeline: {
+    id?: string;
+    status?: string;
+    phase?: string;
+    branch?: string;
+  };
+  epics: Epic[];
+};
+
 // Lecture des projets via l'API du worker (source de vérité unique, ADR 0005).
 // AGENT_TOKEN reste côté serveur. `cache: no-store` : données toujours fraîches.
 export async function getProjects(): Promise<Project[]> {
@@ -22,4 +45,15 @@ export async function getProjects(): Promise<Project[]> {
   if (!r.ok) throw new Error(`worker /projects: HTTP ${r.status}`);
   const data = await r.json();
   return data?.projects ?? [];
+}
+
+// Board d'un projet (epics/stories + pipeline). null si projet inconnu (404).
+export async function getProjectBoard(name: string): Promise<Board | null> {
+  const r = await fetch(
+    `${BACKEND.worker}/projects/${encodeURIComponent(name)}/board`,
+    { headers: { Authorization: `Bearer ${AGENT_TOKEN}` }, cache: "no-store" },
+  );
+  if (r.status === 404) return null;
+  if (!r.ok) throw new Error(`worker board: HTTP ${r.status}`);
+  return r.json();
 }

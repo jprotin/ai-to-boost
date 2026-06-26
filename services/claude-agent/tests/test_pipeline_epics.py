@@ -273,6 +273,62 @@ def test_list_projects():
             os.environ["XDG_CONFIG_HOME"] = saved
 
 
+def test_project_board():
+    """Board projet : epics+stories depuis le worktree, statuts, détail story, pipeline."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="board-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        proj = os.path.join(d, "proj")
+        os.makedirs(os.path.join(proj, ".ai-to-boost"))
+        wt = os.path.join(d, "wt")
+        os.makedirs(os.path.join(wt, "_bmad-output/planning-artifacts"))
+        epics_md = "## Epic 1: Auth\n### Story 1.1: Créer un compte\n### Story 1.2: Se connecter\n"
+        with open(
+            os.path.join(wt, "_bmad-output/planning-artifacts/epics.md"), "w"
+        ) as f:
+            f.write(epics_md)
+        dest = os.path.join(wt, m.SPRINT_REL)
+        os.makedirs(os.path.dirname(dest))
+        with open(dest, "w") as f:
+            f.write(m._gen_sprint_status(m._parse_epics(epics_md), "P"))
+        m._set_story_status(wt, "1-1-crer-un-compte", "done")
+        m._rollup_epics(wt)
+        m._write_story_md(wt, "1-1-crer-un-compte", "done", "résumé dev")
+        with open(os.path.join(proj, ".ai-to-boost", "pipeline.json"), "w") as f:
+            json.dump(
+                {
+                    "pipeline_id": "x",
+                    "status": "awaiting_approval",
+                    "phase": "epics",
+                    "branch": "pipeline/x",
+                    "worktree": wt,
+                },
+                f,
+            )
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump({"active": "proj", "projects": {"proj": {"path": proj}}}, f)
+
+        b = m._project_board("proj")
+        assert b["pipeline"]["status"] == "awaiting_approval"
+        assert len(b["epics"]) == 1
+        e = b["epics"][0]
+        assert e["title"] == "Auth"
+        assert e["status"] == "in-progress"  # 1 done + 1 backlog
+        st = {s["id"]: s["status"] for s in e["stories"]}
+        assert st["1-1-crer-un-compte"] == "done"
+        assert st["1-2-se-connecter"] == "backlog"
+        s11 = next(s for s in e["stories"] if s["id"] == "1-1-crer-un-compte")
+        assert "résumé dev" in s11["detail"]
+        assert m._project_board("nope") is None  # projet inconnu
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
