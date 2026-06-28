@@ -7,6 +7,12 @@ versionnage [SemVer](https://semver.org/).
 
 ### Modifié
 
+- **Modèles locaux Ollama** (suite ADR 0007) : `local-gemma`=`gemma4:e4b` (au lieu de
+  gemma3n:e4b), `local-qwen`=`qwen3.5:9b` (au lieu de qwen3:8b). Image Ollama **pinnée
+  `0.30.11`** (0.30+ requis pour gemma4) + `OLLAMA_CONTEXT_LENGTH=32768` (agents de code
+  type KiloCode). qwen3.5:9b étant un reasoner bavard, `_llm_local` (worker) passe à
+  `max_tokens=16000` pour éviter les réponses vides. Alias LiteLLM inchangés. VRAM @ 32k :
+  gemma4 ~3,3 Go, qwen3.5 ~6,7 Go (validé sur 12 Go).
 - **Serveur de modèles locaux : Ollama dockerisé remplace LM Studio** (ADR 0007).
   LM Studio (natif, hors compose) ne fonctionnait plus ; il est remplacé par un service
   `ollama` **dans la stack compose**, avec passthrough GPU et `ollama-init` (pull idempotent

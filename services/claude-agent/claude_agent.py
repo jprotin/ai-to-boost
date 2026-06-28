@@ -495,9 +495,10 @@ def _pipe_callback(pid):
         print(f"[pipe-callback] échec {pid}: {exc}", flush=True)
 
 
-def _llm_local(model, system, user, max_tokens=4000):
+def _llm_local(model, system, user, max_tokens=16000):
     """Chat LiteLLM (modèle local). max_tokens élevé : local-gemma/qwen raisonnent —
-    un budget trop bas renvoie un contenu vide."""
+    un budget trop bas renvoie un contenu vide. qwen3.5:9b a une réflexion longue ET
+    variable (parfois > 4000 tokens) → défaut 16000 pour couvrir réflexion + réponse."""
     body = json.dumps(
         {
             "model": model,

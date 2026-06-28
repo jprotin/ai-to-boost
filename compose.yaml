@@ -29,7 +29,7 @@ volumes:
 services:
   # Phase 1 — serveur de modèles locaux (GPU) — cf. ADR 0007 (remplace LM Studio natif)
   ollama:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.30.11 # pin : 0.30+ requis pour gemma4 (cf. ADR 0007)
     container_name: ollama
     restart: unless-stopped
     networks:
@@ -38,6 +38,7 @@ services:
       - "127.0.0.1:11434:11434" # exposé en local uniquement
     environment:
       OLLAMA_KEEP_ALIVE: "30m" # garde les modèles chauds en VRAM
+      OLLAMA_CONTEXT_LENGTH: "32768" # gros contexte (agents de code type KiloCode)
     volumes:
       - ollama-data:/root/.ollama
     healthcheck:
@@ -55,7 +56,7 @@ services:
 
   # Phase 1 — pull idempotent des modèles locaux (one-shot, sort après pull)
   ollama-init:
-    image: ollama/ollama:latest
+    image: ollama/ollama:0.30.11
     container_name: ollama-init
     depends_on:
       ollama:
@@ -66,7 +67,7 @@ services:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
     command:
-      - "ollama pull gemma3n:e4b && ollama pull qwen3:8b && ollama pull nomic-embed-text"
+      - "ollama pull gemma4:e4b && ollama pull qwen3.5:9b && ollama pull nomic-embed-text"
     restart: "no"
 
   # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)

@@ -12,16 +12,18 @@
 ---
 model_list:
   # --- Ollama local (OpenAI-compatible /v1, service compose `ollama`) ---
-  # Contrainte 12 Go VRAM : gemma (8.3 Go) + embed (0.6 Go) tiennent ensemble ;
-  # qwen3:8b (~6 Go) tient seul full-GPU. OLLAMA_KEEP_ALIVE gère le load/unload.
+  # Contrainte 12 Go VRAM : gemma4:e4b (~3.3 Go) + embed (0.6 Go) tiennent ensemble ;
+  # qwen3.5:9b (~5.6 Go) tient seul full-GPU. OLLAMA_KEEP_ALIVE gère le load/unload.
+  # qwen3.5 = modèle à RAISONNEMENT bavard : prévoir max_tokens >= 8000-16000 côté
+  # appelant, sinon content vide (cf. claude_agent._llm_local). gemma4 non bavard.
   - model_name: local-gemma
     litellm_params:
-      model: openai/gemma3n:e4b
+      model: openai/gemma4:e4b
       api_base: os.environ/OLLAMA_BASE_URL
       api_key: ollama # pragma: allowlist secret (placeholder, Ollama n'exige pas de clé)
   - model_name: local-qwen
     litellm_params:
-      model: openai/qwen3:8b
+      model: openai/qwen3.5:9b
       api_base: os.environ/OLLAMA_BASE_URL
       api_key: ollama # pragma: allowlist secret
   - model_name: local-embed
