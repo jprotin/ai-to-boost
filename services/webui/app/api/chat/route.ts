@@ -55,7 +55,10 @@ async function generate(
     body: JSON.stringify({
       model: modelId,
       messages: payload,
-      max_tokens: 2048,
+      // Budget large : local-qwen (qwen3.5:9b) est un reasoner bavard — via /v1 la
+      // réflexion est comptée dans max_tokens puis retirée du content ; un budget
+      // trop bas renvoie une réponse vide (cf. ADR 0007, claude_agent._llm_local).
+      max_tokens: 16000,
       temperature: 0.5,
     }),
     signal,
