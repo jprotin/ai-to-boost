@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { ArtifactsView } from "@/components/artifacts-view";
 import { Chat } from "@/components/chat";
 import { CollectButton } from "@/components/collect-button";
 import { JalonBanner } from "@/components/jalon-banner";
@@ -23,6 +24,9 @@ export function ProjectView({
   board: Board;
 }) {
   const [board, setBoard] = useState(initial);
+  const [tab, setTab] = useState(
+    initial.pipeline?.status === "awaiting_approval" ? "artifacts" : "board",
+  );
   const prevStatus = useRef<string | undefined>(initial.pipeline?.status);
 
   const refetch = useCallback(async () => {
@@ -32,8 +36,10 @@ export function ProjectView({
       const b: Board = await r.json();
       const s = b.pipeline?.status;
       if (s !== prevStatus.current) {
-        if (s === "awaiting_approval") toast.info(`Jalon « ${b.pipeline?.phase} » à valider`);
-        else if (s === "done") toast.success("Pipeline terminé");
+        if (s === "awaiting_approval") {
+          toast.info(`Jalon « ${b.pipeline?.phase} » à valider`);
+          setTab("artifacts"); // bascule sur la relecture des artefacts au jalon
+        } else if (s === "done") toast.success("Pipeline terminé");
         else if (s === "error") toast.error("Pipeline en erreur");
         prevStatus.current = s;
       }
@@ -87,14 +93,27 @@ export function ProjectView({
         </div>
       ) : null}
 
-      <Tabs defaultValue="board" className="space-y-4">
+      <Tabs
+        value={tab}
+        onValueChange={(v) => setTab(String(v))}
+        className="space-y-4"
+      >
         <div className="flex flex-wrap items-center justify-between gap-2">
           <TabsList>
             <TabsTrigger value="board">Board</TabsTrigger>
+            <TabsTrigger value="artifacts">Artefacts</TabsTrigger>
             <TabsTrigger value="chat">Chat projet</TabsTrigger>
           </TabsList>
           <LaunchPipeline name={name} />
         </div>
+
+        <TabsContent value="artifacts">
+          <ArtifactsView
+            name={name}
+            artifacts={board.pipeline?.artifacts ?? []}
+            current={board.pipeline?.awaiting}
+          />
+        </TabsContent>
 
         <TabsContent value="board">
           {board.epics.length === 0 ? (

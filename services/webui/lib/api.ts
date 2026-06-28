@@ -25,6 +25,7 @@ export type Epic = {
   stories: Story[];
 };
 export type Phase = { key: string; persona: string; model: string };
+export type Artifact = { key: string; title: string };
 export type Board = {
   name: string;
   pipeline: {
@@ -33,6 +34,8 @@ export type Board = {
     phase?: string;
     branch?: string;
     prompt?: string;
+    awaiting?: string;
+    artifacts?: Artifact[];
   };
   epics: Epic[];
   phases?: Phase[];
