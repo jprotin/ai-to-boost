@@ -1,6 +1,6 @@
 // Modèles de chat — données partagées client/serveur (PAS de secret ici).
 // Claude passe par le bridge claude -p (forfait, CGU) ; gemma/qwen par LiteLLM.
-// `match` = sous-chaîne du nom de modèle sous-jacent côté LiteLLM/LM Studio (pour
+// `match` = sous-chaîne du nom de modèle sous-jacent côté LiteLLM/Ollama (pour
 // déterminer la disponibilité via /health).
 export const CHAT_MODELS = [
   { id: "claude", label: "Claude (forfait)", kind: "claude" as const, match: "" },

@@ -34,7 +34,7 @@ export async function getHealth() {
   };
 }
 
-// Modèles réellement disponibles (bridge sain + LM Studio chargés via LiteLLM /health).
+// Modèles réellement disponibles (bridge sain + Ollama chargés via LiteLLM /health).
 export async function getAvailableModels(): Promise<{ id: string; label: string }[]> {
   const [bridge, litellm] = await Promise.all([
     fetchJson(`${BACKEND.bridge}/health`, { Authorization: `Bearer ${BRIDGE_TOKEN}` }, 6000),

@@ -59,7 +59,7 @@ export default async function SettingsPage() {
           <CardContent className="flex flex-wrap gap-2">
             {models.length === 0 ? (
               <span className="text-sm text-muted-foreground">
-                Aucun modèle disponible (bridge / LM Studio).
+                Aucun modèle disponible (bridge / Ollama).
               </span>
             ) : (
               models.map((m) => (
