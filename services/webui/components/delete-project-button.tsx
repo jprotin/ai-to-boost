@@ -15,7 +15,8 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 
 // Désinscrit un projet (non destructif : le répertoire sur disque est conservé).
 export function DeleteProjectButton({ name }: { name: string }) {
@@ -41,16 +42,15 @@ export function DeleteProjectButton({ name }: { name: string }) {
 
   return (
     <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-7 text-muted-foreground hover:text-destructive"
-          aria-label={`Retirer ${name}`}
-          disabled={busy}
-        >
-          <Trash2 className="size-4" />
-        </Button>
+      <AlertDialogTrigger
+        className={cn(
+          buttonVariants({ variant: "ghost", size: "icon" }),
+          "size-7 text-muted-foreground hover:text-destructive",
+        )}
+        aria-label={`Retirer ${name}`}
+        disabled={busy}
+      >
+        <Trash2 className="size-4" />
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>

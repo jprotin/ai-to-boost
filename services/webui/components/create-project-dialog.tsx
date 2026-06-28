@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { toast } from "sonner";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
@@ -48,8 +48,8 @@ export function CreateProjectDialog() {
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button size="sm">Nouveau projet</Button>
+      <DialogTrigger className={buttonVariants({ size: "sm" })}>
+        Nouveau projet
       </DialogTrigger>
       <DialogContent>
         <DialogHeader>
