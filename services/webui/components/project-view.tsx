@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 import { Chat } from "@/components/chat";
+import { CollectButton } from "@/components/collect-button";
 import { JalonBanner } from "@/components/jalon-banner";
 import { LaunchPipeline } from "@/components/launch-pipeline";
 import { PipelineProgress } from "@/components/pipeline-progress";
@@ -73,6 +74,15 @@ export function ProjectView({
             <code className="text-xs text-muted-foreground">
               {board.pipeline.branch}
             </code>
+          ) : null}
+          {board.pipeline.status === "done" ? (
+            <div className="ml-auto">
+              <CollectButton
+                name={name}
+                branch={board.pipeline.branch}
+                onCollected={refetch}
+              />
+            </div>
           ) : null}
         </div>
       ) : null}

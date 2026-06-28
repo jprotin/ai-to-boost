@@ -329,6 +329,119 @@ def test_project_board():
             os.environ["XDG_CONFIG_HOME"] = saved
 
 
+def _git_repo(path):
+    """Init un dépôt git jetable sur 'develop' avec un commit initial."""
+    import subprocess
+
+    os.makedirs(path, exist_ok=True)
+    env = {
+        **os.environ,
+        "GIT_AUTHOR_NAME": "t",
+        "GIT_AUTHOR_EMAIL": "t@t",
+        "GIT_COMMITTER_NAME": "t",
+        "GIT_COMMITTER_EMAIL": "t@t",
+    }
+
+    def g(*args):
+        subprocess.run(
+            ["git", "-C", path, *args],
+            check=True,
+            env=env,
+            capture_output=True,
+            text=True,
+        )
+
+    subprocess.run(
+        ["git", "init", "-b", "develop", path],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    os.makedirs(os.path.join(path, ".ai-to-boost"), exist_ok=True)
+    with open(os.path.join(path, ".ai-to-boost", "config.json"), "w") as f:
+        json.dump({"base_branch": "develop"}, f)
+    with open(os.path.join(path, "README.md"), "w") as f:
+        f.write("seed\n")
+    g("add", "README.md")
+    g("commit", "-m", "init")
+    return g
+
+
+def test_board_fallback_sans_pipeline_json():
+    """Board robuste : sans pipeline.json, retrouve la dernière branche pipeline/* et
+    lit le board depuis elle (au lieu d'un working tree develop vide)."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="board-fb-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        proj = os.path.join(d, "proj")
+        g = _git_repo(proj)
+        # branche pipeline avec board committé
+        g("checkout", "-b", "pipeline/abc123")
+        epics_md = "## Epic 1: Auth\n### Story 1.1: Créer un compte\n"
+        os.makedirs(os.path.join(proj, "_bmad-output/planning-artifacts"))
+        with open(
+            os.path.join(proj, "_bmad-output/planning-artifacts/epics.md"), "w"
+        ) as f:
+            f.write(epics_md)
+        dest = os.path.join(proj, m.SPRINT_REL)
+        os.makedirs(os.path.dirname(dest))
+        with open(dest, "w") as f:
+            f.write(m._gen_sprint_status(m._parse_epics(epics_md), "P"))
+        g("add", "-A")
+        g("commit", "-m", "board")
+        g("checkout", "develop")  # working tree develop = pas de board
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump({"active": "proj", "projects": {"proj": {"path": proj}}}, f)
+
+        b = m._project_board("proj")
+        assert b is not None
+        assert len(b["epics"]) == 1, f"board vide malgré la branche pipeline/* : {b}"
+        assert b["epics"][0]["title"] == "Auth"
+        assert b["pipeline"]["branch"] == "pipeline/abc123"
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+
+
+def test_collect_pipeline_merge():
+    """collect_pipeline fusionne pipeline/<id> → base et le code arrive sur develop."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="collect-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        proj = os.path.join(d, "proj")
+        g = _git_repo(proj)
+        g("checkout", "-b", "pipeline/zzz")
+        with open(os.path.join(proj, "feature.txt"), "w") as f:
+            f.write("livrable\n")
+        g("add", "feature.txt")
+        g("commit", "-m", "feature")
+        with open(os.path.join(proj, ".ai-to-boost", "pipeline.json"), "w") as f:
+            json.dump(
+                {"pipeline_id": "zzz", "branch": "pipeline/zzz", "base": "develop"}, f
+            )
+        g("checkout", "develop")
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump({"active": "proj", "projects": {"proj": {"path": proj}}}, f)
+
+        res = m.collect_pipeline("proj")
+        assert res.get("merged") is True, f"collect échoué : {res}"
+        assert res["base"] == "develop" and res["branch"] == "pipeline/zzz"
+        assert os.path.isfile(
+            os.path.join(proj, "feature.txt")
+        ), "le livrable n'est pas arrivé sur develop après collect"
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

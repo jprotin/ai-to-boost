@@ -1097,6 +1097,25 @@ def _read_project_text(repo, branch, worktree, rel):
     return ""
 
 
+def _latest_pipeline_branch(repo):
+    """Dernière branche `pipeline/*` (par date de commit). None si aucune.
+    Filet de sécurité quand .ai-to-boost/pipeline.json est perdu (gitignoré)."""
+    try:
+        out = _git(
+            repo,
+            "for-each-ref",
+            "--sort=-committerdate",
+            "--format=%(refname:short)",
+            "refs/heads/pipeline/",
+        )
+        for line in out.splitlines():
+            if line.strip():
+                return line.strip()
+    except Exception:
+        pass
+    return None
+
+
 def _project_board(name):
     """Board d'un projet (epics/stories + statuts + détail) pour la web-app (ADR 0005).
     Source : sprint-status.yaml + epics.md du worktree/branche/working tree. None si projet
@@ -1126,6 +1145,13 @@ def _project_board(name):
         }
     except Exception:
         pass
+
+    # Filet : pipeline.json perdu (gitignoré) → retrouver la dernière branche pipeline/*
+    # pour éviter un board vide qui retomberait sur le working tree de develop.
+    if not branch:
+        branch = _latest_pipeline_branch(repo)
+        if branch and not pipe.get("branch"):
+            pipe["branch"] = branch
 
     sprint = _read_project_text(repo, branch, worktree, SPRINT_REL)
     epics_md = _read_project_text(
@@ -1173,6 +1199,98 @@ def _project_board(name):
         {"key": p["key"], "persona": p["persona"], "model": p["model"]} for p in PHASES
     ]
     return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
+
+
+def collect_pipeline(name, do_clean=False):
+    """Intègre la branche pipeline d'un projet dans sa base (merge --no-ff).
+    Réplique `ai2b collect` côté worker (ADR 0005). Retourne {merged, branch, base,
+    diff_stat, cleaned} ou {error}."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+    except Exception:
+        p = {}
+    repo = p.get("path") or ""
+    if not repo or not os.path.isdir(repo):
+        return {"error": "projet inconnu"}
+
+    branch = base = worktree = None
+    try:
+        with open(
+            os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
+        ) as f:
+            pj = json.load(f) or {}
+        branch, base, worktree = pj.get("branch"), pj.get("base"), pj.get("worktree")
+    except Exception:
+        pass
+    if not branch:
+        branch = _latest_pipeline_branch(repo)
+    if not base:
+        try:
+            base = _base_branch(repo)
+        except Exception:
+            base = None
+    if not branch or not base:
+        return {"error": "branche pipeline ou base introuvable"}
+
+    try:
+        _git(repo, "rev-parse", "--verify", branch)
+    except Exception:
+        return {"error": f"branche {branch} introuvable (déjà nettoyée ?)"}
+
+    # Garde-fou : aucune modif SUIVIE en attente (le merge bascule de branche). Les
+    # fichiers non suivis (ex. .ai-to-boost/ gitignoré) ne bloquent pas → ignorés.
+    if _git(repo, "status", "--porcelain", "--untracked-files=no"):
+        return {
+            "error": f"copie de travail de '{name}' a des modifs non commitées — "
+            "committe/stash avant l'intégration"
+        }
+
+    try:
+        _git(repo, "checkout", base)
+    except Exception as exc:
+        return {"error": f"checkout {base} impossible: {exc}"}
+
+    merge = subprocess.run(
+        [
+            "git",
+            "-C",
+            repo,
+            "merge",
+            "--no-ff",
+            "--no-edit",
+            "-m",
+            f"Merge {branch} into {base} — pipeline BMAD (webui collect)",
+            branch,
+        ],
+        capture_output=True,
+        text=True,
+    )
+    if merge.returncode != 0:
+        _git(repo, "merge", "--abort", check=False)
+        return {
+            "error": f"conflits de merge — résoudre à la main : "
+            f"git -C {repo} merge --no-ff {branch}"
+        }
+
+    cleaned = False
+    if do_clean:
+        if worktree:
+            _git(repo, "worktree", "remove", worktree, "--force", check=False)
+        _git(repo, "branch", "-d", branch, check=False)  # -d : seulement si bien mergée
+        cleaned = True
+
+    try:
+        diff_stat = _git(repo, "diff", "--stat", "HEAD^1", "HEAD")
+    except Exception:
+        diff_stat = ""
+    return {
+        "merged": True,
+        "branch": branch,
+        "base": base,
+        "cleaned": cleaned,
+        "diff_stat": diff_stat,
+    }
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -1257,8 +1375,23 @@ class Handler(BaseHTTPRequestHandler):
             self._post_project_resume()
         elif self.path.startswith("/projects/") and self.path.endswith("/run"):
             self._post_project_run()
+        elif self.path.startswith("/projects/") and self.path.endswith("/collect"):
+            self._post_project_collect()
         else:
             self._send(404, {"error": "not found"})
+
+    def _post_project_collect(self):
+        """Intègre la branche pipeline d'un projet → sa base (merge --no-ff)."""
+        name = urllib.parse.unquote(
+            self.path[len("/projects/") : -len("/collect")].strip("/")
+        )
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        res = collect_pipeline(name, bool(data.get("clean")))
+        self._send(400 if res.get("error") else 200, res)
 
     def _post_project_resume(self):
         """Décision de jalon sur le pipeline courant d'un projet (résout le pid)."""
