@@ -5,6 +5,17 @@ versionnage [SemVer](https://semver.org/).
 
 ## [Non publié]
 
+### Modifié
+
+- **Serveur de modèles locaux : Ollama dockerisé remplace LM Studio** (ADR 0007).
+  LM Studio (natif, hors compose) ne fonctionnait plus ; il est remplacé par un service
+  `ollama` **dans la stack compose**, avec passthrough GPU et `ollama-init` (pull idempotent
+  des modèles). LiteLLM route via `http://ollama:11434/v1`. Les **alias LiteLLM sont
+  inchangés** (`local-gemma`=`gemma3n:e4b`, `local-qwen`=`qwen3:8b`, `local-embed`=
+  `nomic-embed-text`) → aucun impact worker/n8n/webui. Embeddings 768 dims (compat Qdrant,
+  pas de réindexation). `LMSTUDIO_BASE_URL` → `OLLAMA_BASE_URL` dans `.env`. Bench GPU
+  validé sur RTX 5070 Ti Laptop (Blackwell sm_120, CUDA natif, ~84 tok/s).
+
 ### Ajouté
 
 - **Pipeline BMAD multi-persona / multi-LLM — B1** (ADR 0004) : le worker expose un moteur

@@ -8,8 +8,8 @@
 #   Phase 4 — telegram-poller (entrée/sortie)    [actif]
 #   Phase 5 — qdrant  (RAG)                      [actif]
 #
-# LM Studio tourne en natif (hors compose) ; les conteneurs l'atteignent
-# via host.docker.internal (extra_hosts host-gateway).
+# Ollama tourne dans la stack (service `ollama`, GPU) et sert les modèles
+# locaux ; LiteLLM le route via http://ollama:11434/v1. Cf. ADR 0007.
 ---
 name: ai-assistant
 
@@ -19,6 +19,7 @@ networks:
     driver: bridge
 
 volumes:
+  ollama-data: # modèles Ollama (gemma/qwen/nomic), évite le re-téléchargement
   litellm-db: # persistance Postgres (LiteLLM + base n8n)
   whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
   n8n-data: # données n8n (/home/node/.n8n : config, clés, binaires)
@@ -26,6 +27,48 @@ volumes:
   webui-data: # SQLite des conversations de la web-app (ADR 0005)
 
 services:
+  # Phase 1 — serveur de modèles locaux (GPU) — cf. ADR 0007 (remplace LM Studio natif)
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    restart: unless-stopped
+    networks:
+      - ai-assistant-net
+    ports:
+      - "127.0.0.1:11434:11434" # exposé en local uniquement
+    environment:
+      OLLAMA_KEEP_ALIVE: "30m" # garde les modèles chauds en VRAM
+    volumes:
+      - ollama-data:/root/.ollama
+    healthcheck:
+      test: ["CMD", "ollama", "ps"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
+
+  # Phase 1 — pull idempotent des modèles locaux (one-shot, sort après pull)
+  ollama-init:
+    image: ollama/ollama:latest
+    container_name: ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    networks:
+      - ai-assistant-net
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "ollama pull gemma3n:e4b && ollama pull qwen3:8b && ollama pull nomic-embed-text"
+    restart: "no"
+
   # Phase 1 — base de données LiteLLM (clés virtuelles, budgets, logs)
   litellm-db:
     image: postgres:16-alpine
@@ -48,7 +91,7 @@ services:
       timeout: 5s
       retries: 5
 
-  # Phase 1 — gateway des modèles locaux (LM Studio) — cf. ADR 0002
+  # Phase 1 — gateway des modèles locaux (Ollama) — cf. ADR 0002 + 0007
   litellm:
     image: ghcr.io/berriai/litellm:main-stable
     container_name: litellm
@@ -56,12 +99,12 @@ services:
     depends_on:
       litellm-db:
         condition: service_healthy
+      ollama-init:
+        condition: service_completed_successfully
     networks:
       - ai-assistant-net
     ports:
       - "127.0.0.1:4000:4000" # exposé en local uniquement
-    extra_hosts:
-      - "host.docker.internal:host-gateway" # accès au LM Studio natif
     env_file: .env
     volumes:
       - ./services/litellm/config.yaml:/app/config.yaml:ro

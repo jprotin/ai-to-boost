@@ -1,15 +1,16 @@
 # Runbook — Phase 1 : couche modèles locaux (LiteLLM gateway)
 
-Gateway OpenAI-compatible routant vers les **modèles locaux** (LM Studio).
-Voir [ADR 0001](../adr/0001-architecture-assistant-ia-local-orchestre.md) (socle)
-et [ADR 0002](../adr/0002-litellm-modeles-locaux-uniquement.md) (LiteLLM = local only).
+Gateway OpenAI-compatible routant vers les **modèles locaux** (Ollama).
+Voir [ADR 0001](../adr/0001-architecture-assistant-ia-local-orchestre.md) (socle),
+[ADR 0002](../adr/0002-litellm-modeles-locaux-uniquement.md) (LiteLLM = local only)
+et [ADR 0007](../adr/0007-ollama-dockerise-remplace-lmstudio.md) (Ollama remplace LM Studio).
 
 ## Périmètre
 
-- **LM Studio local** (serveur natif sur `:1234`) :
-  - `local-gemma` — `google/gemma-4-e4b`
-  - `local-qwen` — `qwen/qwen3.6-27b` (load à la demande, contrainte 12 Go VRAM)
-  - `local-embed` — `text-embedding-nomic-embed-text-v1.5` (embeddings, Phase 5 RAG)
+- **Ollama** (service compose `ollama`, GPU, sur `:11434`) :
+  - `local-gemma` — `gemma3n:e4b` (défaut planning, ~8,3 Go)
+  - `local-qwen` — `qwen3:8b` (~6 Go, full-GPU ; qwen 27B écarté car > 12 Go)
+  - `local-embed` — `nomic-embed-text` (768 dims, Phase 5 RAG)
 - **Claude n'est PAS routé par LiteLLM** (cf. ADR 0002) :
   - à la main (BMAD) → Claude Code (forfait Max)
   - automatisé (n8n) → `claude -p` headless / Agent SDK (forfait)
@@ -20,23 +21,27 @@ Config : [`services/litellm/config.yaml`](../../services/litellm/config.yaml).
 
 - `.env` complété (copie de `.env.example`) :
   - `LITELLM_MASTER_KEY` — clé d'accès à la gateway (à changer)
-  - `LMSTUDIO_BASE_URL` — `http://host.docker.internal:1234/v1`
+  - `OLLAMA_BASE_URL` — `http://ollama:11434/v1` (service compose, réseau interne)
   - `POSTGRES_PASSWORD` — mot de passe de la base LiteLLM (à changer)
   - `DATABASE_URL` — `postgresql://litellm:<POSTGRES_PASSWORD>@litellm-db:5432/litellm`
     (reprendre le **même** mot de passe que `POSTGRES_PASSWORD`)
-- Serveur LM Studio démarré **en bind réseau** (sinon les conteneurs ne peuvent
-  pas l'atteindre via `host.docker.internal` — LM Studio écoute sur `127.0.0.1`
-  par défaut) avec un modèle chargé :
+- GPU NVIDIA accessible à Docker (`nvidia-container-toolkit` + runtime `nvidia`).
+  Le service `ollama` réclame le GPU via `deploy.resources` ; vérifier la détection :
 
 ```bash
-lms server start --bind 0.0.0.0 --port 1234   # accepte les connexions réseau local
-lms load google/gemma-4-e4b                   # ou un modèle déjà présent (lms ls)
-lms ps                                         # vérifier l'état
-ss -ltn | grep 1234                            # doit montrer 0.0.0.0:1234, pas 127.0.0.1
+docker compose up -d ollama
+docker logs ollama 2>&1 | grep -i "inference compute"   # doit montrer library=CUDA (pas CPU)
 ```
 
-> Sécurité : `--bind 0.0.0.0` expose le serveur au réseau local. Acceptable en
-> poste de travail isolé ; à durcir (firewall) si le réseau n'est pas de confiance.
+- Modèles : le service one-shot `ollama-init` les `pull` automatiquement au premier
+  `up` (gemma3n:e4b, qwen3:8b, nomic-embed-text), puis sort. `litellm` attend sa
+  complétion (`service_completed_successfully`). Pull manuel si besoin :
+
+```bash
+docker exec ollama ollama pull gemma3n:e4b
+docker exec ollama ollama list      # modèles présents
+docker exec ollama ollama ps        # modèles chauds en VRAM + % GPU
+```
 
 ## Base de données (clés virtuelles, budgets, logs)
 
@@ -74,7 +79,7 @@ Endpoint : `http://127.0.0.1:4000`. Remplacer `$LITELLM_MASTER_KEY`.
 curl -s http://127.0.0.1:4000/v1/models \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY"
 
-# Route LM Studio local
+# Route Ollama local
 curl -s http://127.0.0.1:4000/v1/chat/completions \
   -H "Authorization: Bearer $LITELLM_MASTER_KEY" \
   -H "Content-Type: application/json" \
@@ -86,8 +91,10 @@ des modèles `local-*` → Phase 1 validée.
 
 ## Dépannage
 
-- **502/connexion refusée sur `local-*`** : serveur LM Studio arrêté, modèle non
-  chargé (`lms ps`), ou `host.docker.internal` injoignable (vérifier `extra_hosts`
-  et le bind `0.0.0.0`).
+- **502/connexion refusée sur `local-*`** : service `ollama` arrêté/non healthy
+  (`docker compose ps ollama`), ou modèle absent (`docker exec ollama ollama list`).
+- **Modèle sur CPU (lent)** : GPU non vu par Ollama — vérifier `nvidia-container-toolkit`
+  et `docker logs ollama | grep "inference compute"` (doit être `library=CUDA`).
 - **401 gateway** : mauvais `LITELLM_MASTER_KEY` dans l'en-tête `Authorization`.
-- **VRAM** : un seul gros modèle local à la fois (contrainte 12 Go) — load/unload via `lms`.
+- **VRAM (12 Go)** : gemma + embed tiennent ensemble ; qwen3:8b seul. `OLLAMA_KEEP_ALIVE`
+  (compose) décharge les modèles inactifs ; `docker exec ollama ollama ps` pour l'état.
