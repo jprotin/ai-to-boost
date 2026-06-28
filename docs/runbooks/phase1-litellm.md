@@ -7,9 +7,10 @@ et [ADR 0007](../adr/0007-ollama-dockerise-remplace-lmstudio.md) (Ollama remplac
 
 ## Périmètre
 
-- **Ollama** (service compose `ollama`, GPU, sur `:11434`) :
-  - `local-gemma` — `gemma3n:e4b` (défaut planning, ~8,3 Go)
-  - `local-qwen` — `qwen3:8b` (~6 Go, full-GPU ; qwen 27B écarté car > 12 Go)
+- **Ollama** (service compose `ollama`, image pin `0.30.11`, GPU, sur `:11434`,
+  `OLLAMA_CONTEXT_LENGTH=32768`) :
+  - `local-gemma` — `gemma4:e4b` (défaut planning, ~3,3 Go, non bavard)
+  - `local-qwen` — `qwen3.5:9b` (~6,7 Go @ 32k, full-GPU ; **reasoner** → max_tokens ≥ 16000)
   - `local-embed` — `nomic-embed-text` (768 dims, Phase 5 RAG)
 - **Claude n'est PAS routé par LiteLLM** (cf. ADR 0002) :
   - à la main (BMAD) → Claude Code (forfait Max)
@@ -34,11 +35,11 @@ docker logs ollama 2>&1 | grep -i "inference compute"   # doit montrer library=C
 ```
 
 - Modèles : le service one-shot `ollama-init` les `pull` automatiquement au premier
-  `up` (gemma3n:e4b, qwen3:8b, nomic-embed-text), puis sort. `litellm` attend sa
+  `up` (gemma4:e4b, qwen3.5:9b, nomic-embed-text), puis sort. `litellm` attend sa
   complétion (`service_completed_successfully`). Pull manuel si besoin :
 
 ```bash
-docker exec ollama ollama pull gemma3n:e4b
+docker exec ollama ollama pull gemma4:e4b
 docker exec ollama ollama list      # modèles présents
 docker exec ollama ollama ps        # modèles chauds en VRAM + % GPU
 ```
@@ -96,5 +97,7 @@ des modèles `local-*` → Phase 1 validée.
 - **Modèle sur CPU (lent)** : GPU non vu par Ollama — vérifier `nvidia-container-toolkit`
   et `docker logs ollama | grep "inference compute"` (doit être `library=CUDA`).
 - **401 gateway** : mauvais `LITELLM_MASTER_KEY` dans l'en-tête `Authorization`.
-- **VRAM (12 Go)** : gemma + embed tiennent ensemble ; qwen3:8b seul. `OLLAMA_KEEP_ALIVE`
-  (compose) décharge les modèles inactifs ; `docker exec ollama ollama ps` pour l'état.
+- **VRAM (12 Go)** : à contexte 32k, `gemma4:e4b` ~3,3 Go, `qwen3.5:9b` ~6,7 Go (marge OK).
+  `OLLAMA_KEEP_ALIVE` (compose) décharge les modèles inactifs ; `ollama ps` pour l'état.
+- **`content` vide sur `local-qwen`** : `qwen3.5:9b` raisonne longuement → augmenter
+  `max_tokens` (≥ 16000, défaut de `claude_agent._llm_local`). Cf. ADR 0007.
