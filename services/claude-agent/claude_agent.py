@@ -383,7 +383,7 @@ PIPELINES_LOCK = threading.Lock()
 # la machine actuelle) ; passer à local-qwen quand la VRAM le permet (meilleure qualité).
 PLANNING_MODEL = os.environ.get("PIPELINE_PLANNING_MODEL", "local-gemma")
 
-PHASES = [
+PHASES: list[dict] = [
     {
         "key": "analyst",
         "persona": "Analyste produit BMAD (Mary)",
@@ -462,6 +462,16 @@ PHASES = [
         "instruction": "",
     },
 ]
+
+# Artefacts texte relisibles dans la webui (revue avant approbation d'un jalon).
+ARTIFACT_TITLES = {
+    "analyst": "Brief",
+    "pm": "PRD",
+    "architect": "Architecture",
+    "epics": "Epics",
+}
+# Chemin par défaut d'un artefact par clé de phase (filet si pipeline.json incomplet).
+ARTIFACT_PATHS = {p["key"]: p["artifact"] for p in PHASES if p.get("artifact")}
 
 
 def _set_pipe(pid, **kw):
@@ -1269,6 +1279,12 @@ def _project_board(name):
             "phase": pj.get("phase"),
             "branch": branch,
             "prompt": pj.get("prompt"),  # besoin original (description du projet)
+            "awaiting": pj.get("awaiting"),
+            "artifacts": [
+                {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
+                for k in ARTIFACT_PATHS  # ordre des phases
+                if k in (pj.get("artifacts") or {})
+            ],
         }
     except Exception:
         pass
@@ -1279,6 +1295,14 @@ def _project_board(name):
         branch = _latest_pipeline_branch(repo)
         if branch and not pipe.get("branch"):
             pipe["branch"] = branch
+
+    # Artefacts lisibles sur la branche/worktree même sans pipeline.json (fallback).
+    if not pipe.get("artifacts"):
+        pipe["artifacts"] = [
+            {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
+            for k, rel in ARTIFACT_PATHS.items()
+            if _read_project_text(repo, branch, worktree, rel).strip()
+        ]
 
     sprint = _read_project_text(repo, branch, worktree, SPRINT_REL)
     epics_md = _read_project_text(
@@ -1326,6 +1350,42 @@ def _project_board(name):
         {"key": p["key"], "persona": p["persona"], "model": p["model"]} for p in PHASES
     ]
     return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
+
+
+def project_artifact(name, key):
+    """Contenu Markdown d'un artefact (brief/prd/architecture/epics) pour relecture
+    webui. Clé restreinte (pas de lecture de chemin arbitraire). Retourne {key, title,
+    content} ou {error}."""
+    if key not in ARTIFACT_PATHS:
+        return {"error": "artefact inconnu"}
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+    except Exception:
+        p = {}
+    repo = p.get("path") or ""
+    if not repo or not os.path.isdir(repo):
+        return {"error": "projet inconnu"}
+
+    branch = worktree = None
+    rel = ARTIFACT_PATHS[key]
+    try:
+        with open(
+            os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
+        ) as f:
+            pj = json.load(f) or {}
+        branch, worktree = pj.get("branch"), pj.get("worktree")
+        rel = (pj.get("artifacts") or {}).get(key) or rel
+    except Exception:
+        pass
+    if not branch:
+        branch = _latest_pipeline_branch(repo)
+
+    return {
+        "key": key,
+        "title": ARTIFACT_TITLES.get(key, key),
+        "content": _read_project_text(repo, branch, worktree, rel),
+    }
 
 
 def collect_pipeline(name, do_clean=False):
@@ -1456,6 +1516,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, board) if board else self._send(
                 404, {"error": "projet inconnu"}
             )
+            return
+        if self.path.startswith("/projects/") and "/artifact/" in self.path:
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            rest = self.path[len("/projects/") :]
+            name, _, key = rest.partition("/artifact/")
+            res = project_artifact(
+                urllib.parse.unquote(name.strip("/")),
+                urllib.parse.unquote(key.strip("/")),
+            )
+            code = 200
+            if res.get("error") == "projet inconnu":
+                code = 404
+            elif res.get("error"):
+                code = 400
+            self._send(code, res)
             return
         if self.path.startswith("/jobs/"):
             if not self._auth_ok():

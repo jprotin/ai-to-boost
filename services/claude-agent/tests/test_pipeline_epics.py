@@ -485,6 +485,53 @@ def test_create_and_delete_project():
             os.environ["XDG_CONFIG_HOME"] = saved_x
 
 
+def test_project_artifacts():
+    """Le board expose les artefacts (ordre des phases + titres + awaiting) et
+    project_artifact renvoie le contenu, rejette une clé inconnue."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="arts-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        proj = os.path.join(d, "proj")
+        os.makedirs(os.path.join(proj, ".ai-to-boost"))
+        wt = os.path.join(d, "wt")
+        os.makedirs(os.path.join(wt, "docs"))
+        with open(os.path.join(wt, "docs", "prd.md"), "w") as f:
+            f.write("# PRD — Démo\ncontenu prd")
+        with open(os.path.join(proj, ".ai-to-boost", "pipeline.json"), "w") as f:
+            json.dump(
+                {
+                    "pipeline_id": "x",
+                    "status": "awaiting_approval",
+                    "phase": "pm",
+                    "awaiting": "pm",
+                    "branch": "pipeline/x",
+                    "worktree": wt,
+                    "artifacts": {"analyst": "docs/brief.md", "pm": "docs/prd.md"},
+                },
+                f,
+            )
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump({"active": "proj", "projects": {"proj": {"path": proj}}}, f)
+
+        b = m._project_board("proj")
+        arts = b["pipeline"]["artifacts"]
+        assert [a["key"] for a in arts] == ["analyst", "pm"], arts
+        assert {a["key"]: a["title"] for a in arts}["pm"] == "PRD"
+        assert b["pipeline"]["awaiting"] == "pm"
+
+        art = m.project_artifact("proj", "pm")
+        assert art["title"] == "PRD" and "contenu prd" in art["content"]
+        assert "error" in m.project_artifact("proj", "bogus")  # clé inconnue
+        assert m.project_artifact("nope", "pm").get("error") == "projet inconnu"
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
