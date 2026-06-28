@@ -13,7 +13,7 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Button } from "@/components/ui/button";
+import { buttonVariants } from "@/components/ui/button";
 
 // Intègre la branche pipeline du projet dans sa base (merge --no-ff via le worker).
 export function CollectButton({
@@ -53,10 +53,11 @@ export function CollectButton({
 
   return (
     <AlertDialog>
-      <AlertDialogTrigger asChild>
-        <Button size="sm" disabled={busy}>
-          Récupérer le résultat
-        </Button>
+      <AlertDialogTrigger
+        className={buttonVariants({ size: "sm" })}
+        disabled={busy}
+      >
+        Récupérer le résultat
       </AlertDialogTrigger>
       <AlertDialogContent>
         <AlertDialogHeader>
