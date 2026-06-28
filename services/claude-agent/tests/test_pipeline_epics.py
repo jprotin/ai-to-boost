@@ -442,6 +442,49 @@ def test_collect_pipeline_merge():
             os.environ["XDG_CONFIG_HOME"] = saved
 
 
+def test_valid_project_name():
+    for ok in ("demo", "mon-projet_2", "avec espace", "A1"):
+        assert m._valid_project_name(ok), ok
+    for ko in ("", "../x", "a/b", ".hidden", "-lead", "x" * 65):
+        assert not m._valid_project_name(ko), ko
+
+
+def test_create_and_delete_project():
+    """create_project (git+develop+marqueur+registre) ; delete_project désinscrit
+    SANS supprimer le répertoire."""
+    saved_x = os.environ.get("XDG_CONFIG_HOME")
+    saved_pd = m.PROJECTS_DIR
+    d = tempfile.mkdtemp(prefix="crud-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        m.PROJECTS_DIR = os.path.join(d, "projs")
+
+        res = m.create_project("demo crud")
+        assert res.get("created") is True, res
+        path = res["path"]
+        assert os.path.isdir(os.path.join(path, ".git"))
+        assert os.path.isfile(os.path.join(path, ".ai-to-boost", "config.json"))
+        assert m._git(path, "rev-parse", "--abbrev-ref", "HEAD") == "develop"
+        projs = m._read_registry().get("projects") or {}
+        assert "demo crud" in projs
+        assert projs["demo crud"]["base_branch"] == "develop"
+
+        assert "error" in m.create_project("demo crud")  # doublon
+        assert "error" in m.create_project("../evil")  # nom invalide
+
+        dres = m.delete_project("demo crud")
+        assert dres.get("deleted") is True
+        assert "demo crud" not in (m._read_registry().get("projects") or {})
+        assert os.path.isdir(path), "le répertoire ne doit PAS être supprimé"
+        assert "error" in m.delete_project("demo crud")  # déjà retiré
+    finally:
+        m.PROJECTS_DIR = saved_pd
+        if saved_x is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved_x
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

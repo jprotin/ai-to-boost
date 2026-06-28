@@ -26,6 +26,7 @@ Config (env, cf. .env) :
   AGENT_FORBID       repos interdits comme cible (défaut = repo ai-to-boost)
 """
 
+import datetime
 import json
 import os
 import re
@@ -63,6 +64,14 @@ FORBID = [
     for p in os.environ.get("AGENT_FORBID", _DEFAULT_FORBID).split(os.pathsep)
     if p
 ]
+
+# Création/suppression de projets depuis la web-app (F4). Mêmes conventions que le CLI
+# ai2b : init via scripts/ai-to-boost-init.sh, projets sous AI2B_PROJECTS_DIR (~/dev).
+ORCH_ROOT = _DEFAULT_FORBID
+INIT_SCRIPT = os.path.join(ORCH_ROOT, "scripts", "ai-to-boost-init.sh")
+PROJECTS_DIR = os.path.realpath(
+    os.path.expanduser(os.environ.get("AI2B_PROJECTS_DIR", "~/dev"))
+)
 
 # Hook garde-fou PreToolUse (denylist Bash + confinement écritures), injecté via --settings.
 GUARD_HOOK = os.path.join(os.path.dirname(os.path.abspath(__file__)), "guard_hook.py")
@@ -1074,6 +1083,124 @@ def _list_projects():
     return out
 
 
+_PROJECT_NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 _-]{0,63}$")
+
+
+def _valid_project_name(name):
+    """Nom de projet sûr : lettres/chiffres/espace/-/_ , 1-64 car., pas de séparateur."""
+    return bool(name) and bool(_PROJECT_NAME_RE.match(name)) and os.sep not in name
+
+
+def _read_registry():
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            return json.load(f) or {}
+    except Exception:
+        return {}
+
+
+def _update_registry(mutator):
+    """Lit, applique mutator(dict)->dict, réécrit le registre de façon atomique."""
+    reg = mutator(_read_registry())
+    path = _registry_path()
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
+        json.dump(reg, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+    return reg
+
+
+def _is_forbidden_path(target):
+    for forbid in FORBID:
+        if (
+            target == forbid
+            or target.startswith(forbid + os.sep)
+            or forbid.startswith(target + os.sep)
+        ):
+            return True
+    return False
+
+
+def create_project(name, path=None):
+    """Crée un projet pilotable (git + main/develop + marqueur .ai-to-boost via
+    ai-to-boost-init.sh) et l'enregistre. Ne touche PAS l'actif/AGENT_DEFAULT_REPO
+    (pas d'auto-restart du worker). Retourne {created, name, path} ou {error}."""
+    name = (name or "").strip()
+    if not _valid_project_name(name):
+        return {"error": "nom invalide (lettres/chiffres/espace/-/_ , max 64)"}
+    if name in (_read_registry().get("projects") or {}):
+        return {"error": f"projet déjà enregistré : {name}"}
+
+    target = os.path.realpath(
+        os.path.expanduser(path or os.path.join(PROJECTS_DIR, name))
+    )
+    if _is_forbidden_path(target):
+        return {"error": "chemin interdit (orchestrateur)"}
+    if os.path.isdir(target) and os.listdir(target):
+        return {"error": f"{target} existe et n'est pas vide (utiliser 'enregistrer')"}
+
+    ident = ["-c", "user.email=ai2b@local", "-c", "user.name=ai-to-boost"]
+    try:
+        os.makedirs(target, exist_ok=True)
+        _git(target, "init", "-q")
+        with open(os.path.join(target, "README.md"), "w", encoding="utf-8") as f:
+            f.write(f"# {name}\n")
+        _git(target, "add", "README.md")
+        _git(target, *ident, "commit", "-q", "-m", f"chore: init projet {name}")
+        _git(target, "branch", "-M", "main")
+        _git(target, "checkout", "-q", "-b", "develop")
+        init = subprocess.run([INIT_SCRIPT, target], capture_output=True, text=True)
+        if init.returncode != 0:
+            return {
+                "error": "init projet échoué: "
+                + (init.stderr.strip() or init.stdout.strip() or "?")
+            }
+        if os.path.isfile(os.path.join(target, ".gitignore")):
+            _git(target, "add", ".gitignore")
+            _git(
+                target,
+                *ident,
+                "commit",
+                "-q",
+                "-m",
+                "chore: .gitignore ai-to-boost",
+                check=False,
+            )
+    except Exception as exc:
+        return {"error": f"création échouée: {exc}"}
+
+    created = datetime.datetime.now().isoformat(timespec="seconds")
+
+    def _mut(d):
+        d.setdefault("projects", {})[name] = {
+            "path": target,
+            "base_branch": "develop",
+            "created": created,
+        }
+        return d
+
+    _update_registry(_mut)
+    return {"created": True, "name": name, "path": target}
+
+
+def delete_project(name):
+    """Désinscrit un projet du registre (NON destructif : le répertoire reste).
+    Retourne {deleted, name} ou {error}."""
+    name = (name or "").strip()
+    if name not in (_read_registry().get("projects") or {}):
+        return {"error": "projet inconnu"}
+
+    def _mut(d):
+        (d.get("projects") or {}).pop(name, None)
+        if d.get("active") == name:
+            d["active"] = None
+        return d
+
+    _update_registry(_mut)
+    return {"deleted": True, "name": name, "purged": False}
+
+
 _EPIC_STATUS_RE = re.compile(r"^\s+epic-(\d+):\s*(\S+)")
 
 
@@ -1365,6 +1492,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if self.path == "/jobs":
             self._post_job()
+        elif self.path == "/projects":
+            self._post_project_create()
         elif self.path == "/pipelines":
             self._post_pipeline()
         elif self.path == "/pipelines/resume":
@@ -1379,6 +1508,27 @@ class Handler(BaseHTTPRequestHandler):
             self._post_project_collect()
         else:
             self._send(404, {"error": "not found"})
+
+    def do_DELETE(self):
+        if not self._auth_ok():
+            self._send(401, {"error": "unauthorized"})
+            return
+        if self.path.startswith("/projects/"):
+            name = urllib.parse.unquote(self.path[len("/projects/") :].strip("/"))
+            res = delete_project(name)
+            self._send(400 if res.get("error") else 200, res)
+            return
+        self._send(404, {"error": "not found"})
+
+    def _post_project_create(self):
+        """Crée + enregistre un projet pilotable (réplique ai2b new, sans restart)."""
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        res = create_project(data.get("name") or "", data.get("path") or None)
+        self._send(400 if res.get("error") else 201, res)
 
     def _post_project_collect(self):
         """Intègre la branche pipeline d'un projet → sa base (merge --no-ff)."""
