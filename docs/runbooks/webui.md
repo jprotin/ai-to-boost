@@ -5,8 +5,9 @@ Web-app Next.js (App Router + shadcn/ui) qui pilotera ai-to-boost depuis le navi
 
 - Code : `services/webui/` · Image : `Dockerfile` (build standalone) · Service compose : `webui`
 - Accès : <http://127.0.0.1:3001>
-- **Phase actuelle : C3.0** — scaffold + auth (login/logout) + shells des 5 pages
-  (Dashboard, Chat, Projets, Projet, Paramètres). Pas encore de chat/board (C3.1+).
+- **État : opérationnel** — auth, chat (Claude bridge / LiteLLM local), Projets (CRUD),
+  Projet (board + pipeline + artefacts + archive + tokens), Dashboard, Paramètres.
+  Parcours utilisateur : [guide de déploiement](../guide-deploiement.md).
 
 ## Architecture (rappel ADR 0005)
 
@@ -78,10 +79,37 @@ npm run dev   # http://localhost:3000
   `GET|DELETE /api/conversations/<id>`.
 - **Image** : base `node:24-slim` (et non alpine) pour le binaire natif `better-sqlite3`.
 
+## Projets & pipeline (lots F1–F6)
+
+Le BFF parle au worker `:8089` (`AGENT_TOKEN`, server-only). Pages & routes :
+
+- **Projets** (`app/(dash)/projects`) : liste (`getProjects`), **création** (`POST /api/projects`)
+  et **suppression** (`DELETE /api/projects/[name]`, retrait du registre, non destructif).
+- **Projet** (`components/project-view.tsx`) : onglets **Board / Artefacts / Archive / Chat**,
+  bandeau de jalon, `LaunchPipeline`, bouton **Récupérer le résultat** (`POST …/collect`).
+  Polling live (4 s) tant que le pipeline est `accepted|running|awaiting_approval` ; le
+  lancement déclenche un `refetch` (board live sans refresh manuel).
+- **Artefacts** (`artifacts-view.tsx`) : Brief/PRD/Architecture/Epics en Markdown, chargés à la
+  demande ; bascule auto sur cet onglet à chaque jalon. Accepte un `pid` (archive).
+- **Archive** (`archive-view.tsx`) : runs passés (`GET …/history`), dates créé/terminé, board
+  read-only + artefacts d'un run (`…/history/<pid>[/artifact/<key>]`). Cf. [ADR 0008](../adr/0008-persistance-reprise-archive-pipelines.md).
+- **Tokens** (`token-stat.tsx`) : consommation ↑ entrée / ↓ sortie par story, somme par epic,
+  total pipeline ; agrégés sur le **Dashboard** (`app/(dash)/page.tsx`).
+
+## Gotchas (Next 16 / base-ui)
+
+- shadcn bâti sur **@base-ui** (pas Radix) : les `Trigger` n'acceptent **pas** `asChild` →
+  appliquer les classes via `buttonVariants(...)` sur le `Trigger` (sinon `npm run build`
+  échoue). `Dialog`/`AlertDialog` interactifs : **contrôler** l'état `open` pour fermer après
+  une action async (l'`Action` ne ferme pas tout seul). `DialogContent` impose `sm:max-w-sm`
+  → surcharger le variant `sm:` pour élargir un popup.
+- **Vérifier les builds** : un `docker compose build webui` qui échoue laisse l'ancien
+  conteneur tourner (HTTP 200 trompeur). Confirmer l'image neuve + son contenu avant de conclure.
+
 ## Notes
 
-- **CGU** : le chat Claude (C3.1) passera par le bridge `claude -p` (forfait), **jamais**
-  l'API. Les modèles locaux via LiteLLM.
+- **CGU** : le chat Claude passe par le bridge `claude -p` (forfait), **jamais** l'API.
+  Les modèles locaux via LiteLLM.
 - **Sécurité** : exposé uniquement sur `127.0.0.1`. Une exposition LAN/mobile nécessiterait
   TLS + durcissement (nouvel ADR).
 - **Next 16** : Turbopack par défaut, `params`/`searchParams`/`cookies()` asynchrones,
