@@ -582,6 +582,56 @@ def test_board_tokens():
             os.environ["XDG_CONFIG_HOME"] = saved
 
 
+def test_rehydrate_pipelines():
+    """Au démarrage : charge les pipelines persistés en mémoire ; reprend les running
+    avec worktree, laisse les awaiting en attente, marque error ceux sans worktree."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="rehy-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        m.PIPELINES.clear()
+
+        def mkproj(nm, st, with_wt):
+            proj = os.path.join(d, nm)
+            os.makedirs(os.path.join(proj, ".ai-to-boost"))
+            wt = os.path.join(d, "wt-" + nm)
+            if with_wt:
+                os.makedirs(wt)
+            with open(os.path.join(proj, ".ai-to-boost", "pipeline.json"), "w") as f:
+                json.dump({**st, "repo": proj, "worktree": wt}, f)
+            return proj
+
+        p1 = mkproj(
+            "run", {"pipeline_id": "p1", "status": "running", "phase_index": 4}, True
+        )
+        p2 = mkproj("wait", {"pipeline_id": "p2", "status": "awaiting_approval"}, True)
+        p3 = mkproj("dead", {"pipeline_id": "p3", "status": "running"}, False)
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump(
+                {
+                    "projects": {
+                        "run": {"path": p1},
+                        "wait": {"path": p2},
+                        "dead": {"path": p3},
+                    }
+                },
+                f,
+            )
+
+        to_resume = m._rehydrate_pipelines()
+        assert to_resume == ["p1"], to_resume  # seul le running avec worktree
+        assert {"p1", "p2", "p3"} <= set(m.PIPELINES)  # tous chargés en mémoire
+        assert m.PIPELINES["p2"]["status"] == "awaiting_approval"  # inchangé
+        assert m.PIPELINES["p3"]["status"] == "error"  # worktree absent
+    finally:
+        m.PIPELINES.clear()
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

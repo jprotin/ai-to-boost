@@ -1781,6 +1781,42 @@ class Handler(BaseHTTPRequestHandler):
         self._send(400 if res.get("error") else 202, res)
 
 
+def _rehydrate_pipelines():
+    """Au démarrage : recharge en mémoire les pipelines persistés (pipeline.json de
+    chaque projet du registre) — `PIPELINES` est volatil, un redémarrage du worker les
+    perd sinon. Retourne la liste des pid à REPRENDRE : ceux laissés en cours
+    (running/accepted) avec worktree présent (interrompus par l'arrêt du worker ; les
+    phases sont idempotentes/cumulatives). Les `awaiting_approval` restent en attente ;
+    un worktree disparu → marqué `error` plutôt que faussement « running »."""
+    to_resume = []
+    for name, p in (_read_registry().get("projects") or {}).items():
+        repo = (p or {}).get("path") or ""
+        try:
+            with open(
+                os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
+            ) as f:
+                st = json.load(f) or {}
+        except Exception:
+            continue
+        pid = st.get("pipeline_id")
+        if not pid:
+            continue
+        with PIPELINES_LOCK:
+            if pid in PIPELINES:
+                continue
+            PIPELINES[pid] = st
+        if st.get("status") in ("running", "accepted"):
+            if os.path.isdir(st.get("worktree") or ""):
+                to_resume.append(pid)
+            else:
+                _set_pipe(
+                    pid,
+                    status="error",
+                    error="worktree absent au redémarrage (pipeline interrompu)",
+                )
+    return to_resume
+
+
 def main():
     if not TOKEN:
         raise SystemExit("AGENT_TOKEN requis (cf. .env)")
@@ -1789,6 +1825,9 @@ def main():
             "ANTHROPIC_API_KEY/AUTH_TOKEN présente : refus de démarrer (forfait only)"
         )
     os.makedirs(WORKROOT, exist_ok=True)
+    for pid in _rehydrate_pipelines():
+        print(f"[rehydrate] reprise du pipeline interrompu {pid}", flush=True)
+        threading.Thread(target=_run_pipeline, args=(pid,), daemon=True).start()
     server = ThreadingHTTPServer((HOST, PORT), Handler)
     print(
         f"claude-agent sur {HOST}:{PORT} (modèle {MODEL}, repos interdits: {FORBID})",
