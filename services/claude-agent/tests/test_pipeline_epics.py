@@ -734,6 +734,40 @@ def test_doc_phase_config():
     assert "docs/prd.md" in pr  # protège les entrées de planning
 
 
+def test_project_context_existant_vs_neuf():
+    """_project_context : résume l'existant (à préserver) ; vide pour un projet neuf."""
+    d = tempfile.mkdtemp(prefix="ctx-")
+    proj = os.path.join(d, "p")
+    g = _git_repo(proj)
+    with open(os.path.join(proj, "index.html"), "w") as f:
+        f.write("<h1>Bonjour</h1><div class='quote'>Citation du jour</div>")
+    g("add", "index.html")
+    g("commit", "-m", "code")
+    ctx = m._project_context(proj)
+    assert ctx and "index.html" in ctx and "PRÉSERVER" in ctx
+    assert "Citation du jour" in ctx  # extrait réel du fichier
+
+    proj2 = os.path.join(d, "neuf")
+    _git_repo(proj2)  # juste un README → rien à préserver
+    assert m._project_context(proj2) == ""
+
+
+def test_story_prompt_preserve_existant():
+    pr = m._story_prompt("besoin", {"id": "1-1-x"}, "/tmp/inexistant")
+    assert "PRÉSERVE l'EXISTANT" in pr
+
+
+def test_resolve_dev_model():
+    """Modèle dev/doc résolu : run > projet (config.json) > env (DEV_MODEL)."""
+    d = tempfile.mkdtemp(prefix="devm-")
+    os.makedirs(os.path.join(d, ".ai-to-boost"))
+    assert m._resolve_dev_model(d) == m.DEV_MODEL  # défaut env
+    with open(os.path.join(d, ".ai-to-boost", "config.json"), "w") as f:
+        json.dump({"dev_model": "opus"}, f)
+    assert m._resolve_dev_model(d) == "opus"  # override projet
+    assert m._resolve_dev_model(d, "haiku") == "haiku"  # run gagne sur projet
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

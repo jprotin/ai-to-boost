@@ -13,7 +13,7 @@ export async function POST(
     return NextResponse.json({ error: "non authentifié" }, { status: 401 });
   }
   const { name } = await params;
-  let body: { prompt?: string };
+  let body: { prompt?: string; dev_model?: string };
   try {
     body = await req.json();
   } catch {
@@ -23,6 +23,11 @@ export async function POST(
   if (!prompt) {
     return NextResponse.json({ error: "besoin requis" }, { status: 400 });
   }
+  // Curseur de modèle dev/doc pour CE run (sonnet=rapide, opus=qualité) ; absent => défaut worker.
+  const dev_model =
+    body.dev_model === "sonnet" || body.dev_model === "opus"
+      ? body.dev_model
+      : undefined;
   const r = await fetch(
     `${BACKEND.worker}/projects/${encodeURIComponent(name)}/run`,
     {
@@ -31,7 +36,7 @@ export async function POST(
         "Content-Type": "application/json",
         Authorization: `Bearer ${AGENT_TOKEN}`,
       },
-      body: JSON.stringify({ prompt }),
+      body: JSON.stringify({ prompt, dev_model }),
     },
   );
   const data = await r.json().catch(() => ({}));

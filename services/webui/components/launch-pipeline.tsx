@@ -25,6 +25,7 @@ export function LaunchPipeline({
 }) {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
+  const [model, setModel] = useState<"sonnet" | "opus">("sonnet");
   const [loading, setLoading] = useState(false);
   const router = useRouter();
 
@@ -35,7 +36,7 @@ export function LaunchPipeline({
       const r = await fetch(`/api/projects/${encodeURIComponent(name)}/run`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt }),
+        body: JSON.stringify({ prompt, dev_model: model }),
       });
       const d = await r.json();
       if (!r.ok) throw new Error(d?.error ?? "erreur");
@@ -71,6 +72,25 @@ export function LaunchPipeline({
           placeholder="Ex. une page HTML qui affiche l'heure de Paris en temps réel"
           className="min-h-[7rem]"
         />
+        <div className="flex items-center gap-2 text-sm">
+          <span className="text-muted-foreground">Modèle dev :</span>
+          <Button
+            type="button"
+            size="sm"
+            variant={model === "sonnet" ? "default" : "outline"}
+            onClick={() => setModel("sonnet")}
+          >
+            Rapide (Sonnet)
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant={model === "opus" ? "default" : "outline"}
+            onClick={() => setModel("opus")}
+          >
+            Qualité (Opus)
+          </Button>
+        </div>
         <DialogFooter>
           <Button onClick={run} disabled={loading || !prompt.trim()}>
             {loading ? "Lancement…" : "Lancer"}
