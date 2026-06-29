@@ -501,6 +501,12 @@ def _persist_pipe(pid):
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, "pipeline.json"), "w", encoding="utf-8") as f:
             json.dump(state, f, ensure_ascii=False, indent=2)
+        # Snapshot par run (archive F6) : un fichier par pipeline_id, jamais écrasé par
+        # un run suivant → historique consultable même après relance d'un nouveau pipeline.
+        hdir = os.path.join(d, "pipelines")
+        os.makedirs(hdir, exist_ok=True)
+        with open(os.path.join(hdir, f"{pid}.json"), "w", encoding="utf-8") as f:
+            json.dump(state, f, ensure_ascii=False, indent=2)
     except Exception as exc:
         print(f"[pipe] persist {pid}: {exc}", flush=True)
 
@@ -991,7 +997,12 @@ def _finish_pipeline(pid, status):
             )
         except Exception:
             pass
-    _set_pipe(pid, status=status, **extra)
+    _set_pipe(
+        pid,
+        status=status,
+        finished=datetime.datetime.now().isoformat(timespec="seconds"),
+        **extra,
+    )
     _pipe_callback(pid)
 
 
@@ -1013,6 +1024,7 @@ def start_pipeline(prompt, repo, return_target=None):
             "return_target": return_target,
             "phase_index": 0,
             "artifacts": {},
+            "created": datetime.datetime.now().isoformat(timespec="seconds"),
         }
     _persist_pipe(pid)
     threading.Thread(target=_run_pipeline, args=(pid,), daemon=True).start()
@@ -1266,52 +1278,11 @@ def _latest_pipeline_branch(repo):
     return None
 
 
-def _project_board(name):
-    """Board d'un projet (epics/stories + statuts + détail) pour la web-app (ADR 0005).
-    Source : sprint-status.yaml + epics.md du worktree/branche/working tree. None si projet
-    inconnu/absent."""
-    try:
-        with open(_registry_path(), encoding="utf-8") as f:
-            p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
-    except Exception:
-        p = {}
-    repo = p.get("path") or ""
-    if not repo or not os.path.isdir(repo):
-        return None
-
-    pipe, branch, worktree = {}, None, None
-    story_usage = {}
-    try:
-        with open(
-            os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
-        ) as f:
-            pj = json.load(f) or {}
-        branch, worktree = pj.get("branch"), pj.get("worktree")
-        story_usage = pj.get("usage_by_story") or {}
-        pipe = {
-            "id": pj.get("pipeline_id"),
-            "status": pj.get("status"),
-            "phase": pj.get("phase"),
-            "branch": branch,
-            "prompt": pj.get("prompt"),  # besoin original (description du projet)
-            "awaiting": pj.get("awaiting"),
-            "artifacts": [
-                {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
-                for k in ARTIFACT_PATHS  # ordre des phases
-                if k in (pj.get("artifacts") or {})
-            ],
-        }
-    except Exception:
-        pass
-
-    # Filet : pipeline.json perdu (gitignoré) → retrouver la dernière branche pipeline/*
-    # pour éviter un board vide qui retomberait sur le working tree de develop.
-    if not branch:
-        branch = _latest_pipeline_branch(repo)
-        if branch and not pipe.get("branch"):
-            pipe["branch"] = branch
-
-    # Artefacts lisibles sur la branche/worktree même sans pipeline.json (fallback).
+def _build_board(name, repo, branch, worktree, story_usage, pipe):
+    """Construit le board (epics/stories + statuts + détail + tokens) depuis une
+    branche/worktree donnés. `pipe` = métadonnées pipeline. Réutilisé par le board
+    COURANT et l'ARCHIVE (snapshot d'un run passé, lu depuis sa branche)."""
+    story_usage = story_usage or {}
     if not pipe.get("artifacts"):
         pipe["artifacts"] = [
             {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
@@ -1384,7 +1355,138 @@ def _project_board(name):
     return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
 
 
-def project_artifact(name, key):
+def _project_board(name):
+    """Board d'un projet (epics/stories + statuts + détail) pour la web-app (ADR 0005).
+    Source : sprint-status.yaml + epics.md du worktree/branche/working tree. None si projet
+    inconnu/absent."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+    except Exception:
+        p = {}
+    repo = p.get("path") or ""
+    if not repo or not os.path.isdir(repo):
+        return None
+
+    pipe, branch, worktree = {}, None, None
+    story_usage = {}
+    try:
+        with open(
+            os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
+        ) as f:
+            pj = json.load(f) or {}
+        branch, worktree = pj.get("branch"), pj.get("worktree")
+        story_usage = pj.get("usage_by_story") or {}
+        pipe = {
+            "id": pj.get("pipeline_id"),
+            "status": pj.get("status"),
+            "phase": pj.get("phase"),
+            "branch": branch,
+            "prompt": pj.get("prompt"),  # besoin original (description du projet)
+            "awaiting": pj.get("awaiting"),
+            "artifacts": [
+                {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
+                for k in ARTIFACT_PATHS  # ordre des phases
+                if k in (pj.get("artifacts") or {})
+            ],
+        }
+    except Exception:
+        pass
+
+    # Filet : pipeline.json perdu (gitignoré) → retrouver la dernière branche pipeline/*
+    # pour éviter un board vide qui retomberait sur le working tree de develop.
+    if not branch:
+        branch = _latest_pipeline_branch(repo)
+        if branch and not pipe.get("branch"):
+            pipe["branch"] = branch
+
+    return _build_board(name, repo, branch, worktree, story_usage, pipe)
+
+
+def _project_repo(name):
+    """Chemin du repo d'un projet du registre (None si inconnu/absent)."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+    except Exception:
+        p = {}
+    repo = p.get("path") or ""
+    return repo if repo and os.path.isdir(repo) else None
+
+
+def _pipeline_history(name):
+    """Liste des runs archivés d'un projet (snapshots .ai-to-boost/pipelines/*.json),
+    du plus récent au plus ancien. Tokens = somme de usage_by_story du snapshot."""
+    repo = _project_repo(name)
+    if repo is None:
+        return None
+    hdir = os.path.join(repo, ".ai-to-boost", "pipelines")
+    runs = []
+    try:
+        files = [f for f in os.listdir(hdir) if f.endswith(".json")]
+    except Exception:
+        files = []
+    for fn in files:
+        try:
+            with open(os.path.join(hdir, fn), encoding="utf-8") as f:
+                st = json.load(f) or {}
+        except Exception:
+            continue
+        tin = tout = 0
+        for tok in (st.get("usage_by_story") or {}).values():
+            tin += (tok or {}).get("input") or 0
+            tout += (tok or {}).get("output") or 0
+        runs.append(
+            {
+                "id": st.get("pipeline_id"),
+                "prompt": st.get("prompt"),
+                "status": st.get("status"),
+                "created": st.get("created"),
+                "finished": st.get("finished"),
+                "branch": st.get("branch"),
+                "tokens": {"input": tin, "output": tout} if (tin or tout) else None,
+            }
+        )
+    runs.sort(key=lambda r: r.get("created") or "", reverse=True)
+    return runs
+
+
+def _pipeline_snapshot(name, pid):
+    """Board read-only d'un run archivé (lu depuis SA branche, worktree ignoré car
+    souvent retiré). None si projet/snapshot inconnu."""
+    repo = _project_repo(name)
+    if repo is None:
+        return None
+    try:
+        with open(
+            os.path.join(repo, ".ai-to-boost", "pipelines", f"{pid}.json"),
+            encoding="utf-8",
+        ) as f:
+            st = json.load(f) or {}
+    except Exception:
+        return None
+    pipe = {
+        "id": st.get("pipeline_id"),
+        "status": st.get("status"),
+        "phase": st.get("phase"),
+        "branch": st.get("branch"),
+        "prompt": st.get("prompt"),
+        "created": st.get("created"),
+        "finished": st.get("finished"),
+        "awaiting": st.get("awaiting"),
+        "artifacts": [
+            {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
+            for k in ARTIFACT_PATHS
+            if k in (st.get("artifacts") or {})
+        ],
+    }
+    # Archive : lecture depuis la branche (immuable), pas du worktree (réutilisé/retiré).
+    return _build_board(
+        name, repo, st.get("branch"), None, st.get("usage_by_story"), pipe
+    )
+
+
+def project_artifact(name, key, pid=None):
     """Contenu Markdown d'un artefact (brief/prd/architecture/epics) pour relecture
     webui. Clé restreinte (pas de lecture de chemin arbitraire). Retourne {key, title,
     content} ou {error}."""
@@ -1401,15 +1503,21 @@ def project_artifact(name, key):
 
     branch = worktree = None
     rel = ARTIFACT_PATHS[key]
+    # pid donné -> run archivé (lecture depuis sa branche) ; sinon pipeline courant.
+    src = (
+        os.path.join(repo, ".ai-to-boost", "pipelines", f"{pid}.json")
+        if pid
+        else os.path.join(repo, ".ai-to-boost", "pipeline.json")
+    )
     try:
-        with open(
-            os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
-        ) as f:
+        with open(src, encoding="utf-8") as f:
             pj = json.load(f) or {}
-        branch, worktree = pj.get("branch"), pj.get("worktree")
+        branch = pj.get("branch")
+        worktree = None if pid else pj.get("worktree")  # archive = branche seule
         rel = (pj.get("artifacts") or {}).get(key) or rel
     except Exception:
-        pass
+        if pid:
+            return {"error": "run inconnu"}
     if not branch:
         branch = _latest_pipeline_branch(repo)
 
@@ -1547,6 +1655,40 @@ class Handler(BaseHTTPRequestHandler):
             board = _project_board(name)
             self._send(200, board) if board else self._send(
                 404, {"error": "projet inconnu"}
+            )
+            return
+        if self.path.startswith("/projects/") and "/history" in self.path:
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            rest = self.path[len("/projects/") :]
+            name, _, tail = rest.partition("/history")
+            name = urllib.parse.unquote(name.strip("/"))
+            tail = tail.strip("/")  # "" | "<pid>" | "<pid>/artifact/<key>"
+            if not tail:
+                runs = _pipeline_history(name)
+                if runs is None:
+                    self._send(404, {"error": "projet inconnu"})
+                else:
+                    self._send(200, {"runs": runs})
+                return
+            if "/artifact/" in tail:
+                pid, _, key = tail.partition("/artifact/")
+                res = project_artifact(
+                    name,
+                    urllib.parse.unquote(key.strip("/")),
+                    pid=urllib.parse.unquote(pid.strip("/")),
+                )
+                code = 200
+                if res.get("error") in ("projet inconnu", "run inconnu"):
+                    code = 404
+                elif res.get("error"):
+                    code = 400
+                self._send(code, res)
+                return
+            board = _pipeline_snapshot(name, urllib.parse.unquote(tail))
+            self._send(200, board) if board else self._send(
+                404, {"error": "run inconnu"}
             )
             return
         if self.path.startswith("/projects/") and "/artifact/" in self.path:
@@ -1805,6 +1947,7 @@ def _rehydrate_pipelines():
             if pid in PIPELINES:
                 continue
             PIPELINES[pid] = st
+        _persist_pipe(pid)  # snapshot le run courant (alimente l'archive F6)
         if st.get("status") in ("running", "accepted"):
             if os.path.isdir(st.get("worktree") or ""):
                 to_resume.append(pid)

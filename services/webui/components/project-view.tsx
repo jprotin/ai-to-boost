@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
+import { ArchiveView } from "@/components/archive-view";
 import { ArtifactsView } from "@/components/artifacts-view";
 import { Chat } from "@/components/chat";
 import { CollectButton } from "@/components/collect-button";
@@ -109,6 +110,7 @@ export function ProjectView({
           <TabsList>
             <TabsTrigger value="board">Board</TabsTrigger>
             <TabsTrigger value="artifacts">Artefacts</TabsTrigger>
+            <TabsTrigger value="archive">Archive</TabsTrigger>
             <TabsTrigger value="chat">Chat projet</TabsTrigger>
           </TabsList>
           <LaunchPipeline name={name} />
@@ -132,6 +134,10 @@ export function ProjectView({
           ) : (
             <ProjectBoard board={board} />
           )}
+        </TabsContent>
+
+        <TabsContent value="archive">
+          <ArchiveView name={name} />
         </TabsContent>
 
         <TabsContent value="chat">
