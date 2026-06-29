@@ -467,7 +467,17 @@ PHASES: list[dict] = [
         "kind": "implementation",  # boucle par story ; prompt construit dans _story_prompt
         "artifact": None,
         "context": ["docs/architecture.md", "_bmad-output/planning-artifacts/epics.md"],
-        "checkpoint": True,  # jalon final unique : revue humaine de la branche complète
+        "checkpoint": True,  # jalon "code" : revue humaine de l'implémentation
+        "instruction": "",
+    },
+    {
+        "key": "doc",
+        "persona": "Rédacteur technique BMAD",
+        "model": "claude",  # lit le code produit -> Claude (claude -p, forfait), AVEC outils
+        "kind": "documentation",  # README + docs/ depuis le code final + PRD/archi
+        "artifact": "README.md",  # artefact affiché (entrée de la doc)
+        "context": ["docs/prd.md", "docs/architecture.md"],
+        "checkpoint": True,  # jalon final : revue humaine de la documentation
         "instruction": "",
     },
 ]
@@ -476,6 +486,7 @@ PHASES: list[dict] = [
 ARTIFACT_TITLES = {
     "analyst": "Brief",
     "pm": "PRD",
+    "doc": "Documentation",
     "architect": "Architecture",
     "epics": "Epics",
 }
@@ -891,14 +902,75 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
     )
 
 
+def _doc_prompt(brief, worktree, feedback=""):
+    """Prompt de la phase doc : documenter le CODE RÉEL (pas la spec)."""
+
+    def _rd(rel):
+        try:
+            with open(os.path.join(worktree, rel), encoding="utf-8") as f:
+                return f.read()
+        except Exception:
+            return ""
+
+    prompt = (
+        "Tu es Rédacteur technique. Le code du projet vient d'être implémenté dans le "
+        "répertoire courant. Produis une DOCUMENTATION claire et à jour, en français.\n\n"
+        "À FAIRE (créer ou mettre à jour) :\n"
+        "- README.md (racine) : présentation, fonctionnalités, prérequis, installation, "
+        "démarrage / usage, structure du projet.\n"
+        "- docs/usage.md : guide utilisateur (parcours principaux, exemples concrets).\n"
+        "- docs/technical.md : architecture RÉELLE du code (composants, flux, points "
+        "techniques), cohérente avec ce que tu lis dans le code.\n\n"
+        "RÈGLES STRICTES :\n"
+        "- Explore le code (Read) pour documenter ce qui EXISTE réellement, pas la spec.\n"
+        "- Ne modifie PAS le code applicatif (uniquement README.md et docs/usage|technical).\n"
+        "- Ne touche PAS à _bmad-output/ ni aux docs de planning "
+        "(docs/brief.md, docs/prd.md, docs/architecture.md = ENTRÉES en lecture seule).\n"
+        "- Concis et factuel, sans remplissage. Termine par un court résumé.\n\n"
+        f"# Besoin initial\n{brief}\n"
+    )
+    prd, arch = _rd("docs/prd.md"), _rd("docs/architecture.md")
+    if prd:
+        prompt += f"\n# PRD (référence)\n{prd[:4000]}\n"
+    if arch:
+        prompt += f"\n# Architecture (référence)\n{arch[:4000]}\n"
+    if feedback:
+        prompt += f"\n## Retour à intégrer (révision)\n{feedback}\n"
+    return prompt
+
+
+def _run_doc_phase(worktree, repo, brief, phase, pid, feedback=""):
+    """Phase doc : claude -p AVEC outils lit le code produit + PRD/architecture et
+    crée/met à jour README.md + docs/usage.md + docs/technical.md (sans toucher au code
+    ni aux docs de planning), puis commit (no-op toléré)."""
+    _inject_bmad(worktree)
+    try:
+        res = _run_claude_tools(
+            worktree,
+            repo,
+            _doc_prompt(brief, worktree, feedback),
+            "file",
+            f"pl-{pid}-doc",
+        )
+    finally:
+        _eject_bmad(worktree)  # avant le commit (ne pas committer les symlinks)
+    _git(worktree, "add", "-A")
+    _git(worktree, "commit", "-m", "pipeline(doc): documentation", check=False)
+    with PIPELINES_LOCK:
+        PIPELINES[pid]["doc_tokens"] = res.get("tokens")
+    return phase["artifact"]  # "README.md"
+
+
 def _dispatch_phase(worktree, brief, phase, feedback="", repo=None, pid=None):
-    """Aiguille selon le type de phase : 'text', 'epics' ou 'implementation' (boucle dev)."""
+    """Aiguille selon le type : 'text', 'epics', 'implementation' ou 'documentation'."""
     if phase["kind"] == "text":
         return _run_phase(worktree, brief, phase, feedback)
     if phase["kind"] == "epics":
         return _run_epics_phase(worktree, brief, phase, feedback)
     if phase["kind"] == "implementation":
         return _run_implementation_phase(worktree, repo, brief, phase, pid, feedback)
+    if phase["kind"] == "documentation":
+        return _run_doc_phase(worktree, repo, brief, phase, pid, feedback)
     raise RuntimeError(f"phase '{phase['kind']}' non supportée")
 
 

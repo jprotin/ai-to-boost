@@ -714,6 +714,26 @@ def test_pipeline_history_and_snapshot():
             os.environ["XDG_CONFIG_HOME"] = saved
 
 
+def test_doc_phase_config():
+    """Phase doc : dernière phase, agentique, jalon final ; artefact README ; conserve le
+    jalon code de l'implémentation ; prompt documente le code réel et protège le planning."""
+    doc = next((p for p in m.PHASES if p["key"] == "doc"), None)
+    assert doc is not None, "phase doc absente"
+    assert m.PHASES[-1]["key"] == "doc", "doc doit être la dernière phase"
+    assert doc["kind"] == "documentation" and doc["checkpoint"] is True
+    assert doc["artifact"] == "README.md"
+    assert m.ARTIFACT_PATHS["doc"] == "README.md"
+    assert m.ARTIFACT_TITLES["doc"] == "Documentation"
+    impl = next(p for p in m.PHASES if p["key"] == "implementation")
+    assert impl["checkpoint"] is True  # 2 jalons finaux (code puis doc)
+
+    pr = m._doc_prompt("besoin X", "/tmp/inexistant-doc-test")
+    for must in ("README.md", "docs/usage.md", "docs/technical.md", "besoin X"):
+        assert must in pr, must
+    assert "Ne modifie PAS le code" in pr
+    assert "docs/prd.md" in pr  # protège les entrées de planning
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
