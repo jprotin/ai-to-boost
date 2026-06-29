@@ -44,6 +44,12 @@ TOKEN = os.environ.get("AGENT_TOKEN", "")
 MODEL = os.environ.get("AGENT_MODEL", "opus")
 TIMEOUT = int(os.environ.get("AGENT_TIMEOUT", "600"))
 MAXTURNS = int(os.environ.get("AGENT_MAXTURNS", "30"))
+# Pipeline — curseur de modèle des phases dev/doc (par story). Défaut rapide (sonnet) ;
+# l'architecte et l'ESCALADE sur échec dur restent sur MODEL (opus). Résolution effective :
+# run > projet (.ai-to-boost/config.json:dev_model) > cet env.
+DEV_MODEL = os.environ.get("PIPELINE_DEV_MODEL", "sonnet")
+# max-turns abaissé pour une story (focalisée) ; surchargeable si besoin de plus d'exploration.
+STORY_MAXTURNS = int(os.environ.get("PIPELINE_STORY_MAXTURNS", "16"))
 WORKROOT = os.environ.get(
     "AGENT_WORKROOT", os.path.expanduser("~/.local/share/claude-agent/worktrees")
 )
@@ -258,11 +264,12 @@ def _guard_settings():
     )
 
 
-def _run_claude_tools(worktree, repo, prompt, mode, tag):
+def _run_claude_tools(worktree, repo, prompt, mode, tag, model=None, max_turns=None):
     """Cœur d'appel `claude -p` AVEC outils (Read/Edit/Write[/Bash]) sous garde-fou + RAG,
-    dans un worktree donné. NE gère NI le worktree, NI BMAD, NI le commit, NI RUN_LOCK :
-    l'appelant s'en charge (réutilisé par run_job one-shot ET la boucle dev-story du
-    pipeline). Retourne {summary, cost_usd, audit}. Lève en cas d'échec claude."""
+    dans un worktree donné. `model`/`max_turns` surchargent les défauts (MODEL/MAXTURNS).
+    NE gère NI le worktree, NI BMAD, NI le commit, NI RUN_LOCK : l'appelant s'en charge
+    (réutilisé par run_job one-shot ET la boucle dev-story du pipeline). Retourne
+    {summary, cost_usd, tokens, audit}. Lève en cas d'échec claude."""
     audit_log = os.path.join(WORKROOT, f"{tag}.audit.log")
     env = {
         k: v
@@ -284,13 +291,13 @@ def _run_claude_tools(worktree, repo, prompt, mode, tag):
         "-p",
         prompt,
         "--model",
-        MODEL,
+        model or MODEL,
         "--output-format",
         "json",
         "--permission-mode",
         perm_mode,
         "--max-turns",
-        str(MAXTURNS),
+        str(max_turns or MAXTURNS),
         "--allowed-tools",
         *ALLOWED_TOOLS.get(mode, ALLOWED_TOOLS["file"]),
         *rag_tools,
@@ -436,7 +443,12 @@ PHASES: list[dict] = [
             "'# Architecture — <titre>'. Sections : Vue d'ensemble, Choix techniques "
             "(stack + justifications), Composants & responsabilités, Modèle de données "
             "(si pertinent), Découpage en modules, Risques techniques & parades. "
-            "Reste cohérent avec le PRD."
+            "Reste cohérent avec le PRD. PRINCIPE DIRECTEUR : conçois la solution la PLUS "
+            "SIMPLE et la plus DIRECTE qui répond au besoin, PROPORTIONNÉE à sa taille. "
+            "Pas de sur-ingénierie : n'introduis backend, base de données, authentification, "
+            "sécurité avancée, étape de build ou batterie de tests QUE si le besoin (ou "
+            "l'existant) le justifie réellement. Pour un petit besoin front, une page/un "
+            "module suffit."
         ),
     },
     {
@@ -456,8 +468,12 @@ PHASES: list[dict] = [
             "<critères d'acceptation en puces>\n"
             "### Story 1.2: <titre>\n...\n"
             "## Epic 2: <titre>\n...\n"
-            "Numérote les epics 1..N et les stories N.M en continu. 2 à 4 epics, "
-            "2 à 5 stories par epic. Titres courts et explicites."
+            "Numérote les epics 1..N et les stories N.M en continu. Titres courts.\n"
+            "DÉCOUPAGE MINIMAL et PROPORTIONNÉ au besoin : ne crée que le strict "
+            "nécessaire. Pour un petit besoin, 1 epic et 1 à 3 stories SUFFISENT. "
+            "Maximum 3 epics. N'invente PAS d'epics/stories pour des besoins NON demandés "
+            "(sécurité, admin, tests exhaustifs, perf… seulement si explicitement requis). "
+            "Chaque story = un incrément réellement utile et livrable."
         ),
     },
     {
@@ -470,17 +486,24 @@ PHASES: list[dict] = [
         "checkpoint": True,  # jalon "code" : revue humaine de l'implémentation
         "instruction": "",
     },
-    {
-        "key": "doc",
-        "persona": "Rédacteur technique BMAD",
-        "model": "claude",  # lit le code produit -> Claude (claude -p, forfait), AVEC outils
-        "kind": "documentation",  # README + docs/ depuis le code final + PRD/archi
-        "artifact": "README.md",  # artefact affiché (entrée de la doc)
-        "context": ["docs/prd.md", "docs/architecture.md"],
-        "checkpoint": True,  # jalon final : revue humaine de la documentation
-        "instruction": "",
-    },
 ]
+
+# Phase doc OPTIONNELLE (génère README + docs/ depuis le code final). Activée par défaut ;
+# PIPELINE_DOC_PHASE=false la désactive pour des itérations plus rapides (un appel Claude
+# de moins + un jalon de moins).
+if os.environ.get("PIPELINE_DOC_PHASE", "true").lower() != "false":
+    PHASES.append(
+        {
+            "key": "doc",
+            "persona": "Rédacteur technique BMAD",
+            "model": "claude",  # lit le code produit -> Claude (claude -p, forfait)
+            "kind": "documentation",  # README + docs/ depuis le code final + PRD/archi
+            "artifact": "README.md",  # artefact affiché (entrée de la doc)
+            "context": ["docs/prd.md", "docs/architecture.md"],
+            "checkpoint": True,  # jalon final : revue humaine de la documentation
+            "instruction": "",
+        }
+    )
 
 # Artefacts texte relisibles dans la webui (revue avant approbation d'un jalon).
 ARTIFACT_TITLES = {
@@ -587,9 +610,55 @@ def _llm_claude_text(prompt):
     return (json.loads(proc.stdout or "{}").get("result") or "").strip()
 
 
+def _project_context(worktree, max_files=200, char_budget=8000):
+    """Résumé compact de l'état ACTUEL du projet (arborescence git + extraits des fichiers
+    clés) pour ancrer le planning sur l'EXISTANT au lieu de re-spécifier à neuf. Chaîne
+    vide si le projet est quasi neuf (rien à préserver)."""
+    try:
+        files = [f for f in _git(worktree, "ls-files").splitlines() if f]
+    except Exception:
+        files = []
+    files = [f for f in files if not f.startswith("_bmad-output/")]  # artefacts générés
+    code = [f for f in files if not f.startswith("docs/")]
+    # Projet neuf (vide ou juste un README) → pas de contexte à préserver.
+    if not code or (len(code) == 1 and os.path.basename(code[0]) == "README.md"):
+        return ""
+    tree = "\n".join(f"- {f}" for f in files[:max_files])
+    if len(files) > max_files:
+        tree += f"\n- … (+{len(files) - max_files} fichiers)"
+    priority = [
+        f
+        for f in files
+        if os.path.basename(f)
+        in (
+            "index.html",
+            "README.md",
+            "package.json",
+            "pyproject.toml",
+            "main.py",
+            "app.py",
+        )
+    ]
+    excerpts, used = "", 0
+    for rel in priority + [f for f in code if f not in priority]:
+        if used >= char_budget:
+            break
+        try:
+            with open(os.path.join(worktree, rel), encoding="utf-8") as f:
+                chunk = f.read()[:3000]
+        except Exception:
+            continue
+        excerpts += f"\n\n### {rel}\n```\n{chunk}\n```"
+        used += len(chunk)
+    return (
+        "## État ACTUEL du projet (déjà développé — à PRÉSERVER et étendre)\n"
+        f"Arborescence :\n{tree}\n{excerpts}"
+    )
+
+
 def _persona_content(worktree, brief, phase, feedback=""):
-    """Construit le prompt (rôle + tâche + artefacts amont + feedback) et appelle la LLM
-    routée (local via LiteLLM, ou Claude via claude -p). Retourne le contenu markdown."""
+    """Construit le prompt (rôle + tâche + état du projet + artefacts amont + feedback) et
+    appelle la LLM routée (local via LiteLLM, ou Claude via claude -p)."""
     ctx = ""
     for rel in phase["context"]:
         p = os.path.join(worktree, rel)
@@ -602,6 +671,21 @@ def _persona_content(worktree, brief, phase, feedback=""):
         "sans préambule ni commentaire."
     )
     user = f"# Besoin initial\n{brief}{ctx}"
+    # Contexte de l'existant injecté CIBLÉ (analyste : cadre ; architecte : conçoit). PM et
+    # epics héritent de l'existant via les artefacts amont (brief/architecture incrémentaux)
+    # → on évite de re-dumper le code à chaque phase (coût tokens/latence).
+    proj = (
+        _project_context(worktree) if phase["key"] in ("analyst", "architect") else ""
+    )
+    if proj:
+        user += (
+            f"\n\n{proj}\n\n"
+            "## Consigne INCRÉMENTALE (IMPORTANT)\n"
+            "Le projet ci-dessus existe DÉJÀ. Conçois/spécifie en t'appuyant sur cet "
+            "existant et en PRÉSERVANT ses fonctionnalités : tu AJOUTES / ÉTENDS. Ne "
+            "supprime ni ne remplace une fonctionnalité existante QUE si le besoin le "
+            "demande EXPLICITEMENT."
+        )
     if feedback:
         user += f"\n\n## Retour à intégrer (révision)\n{feedback}"
     model = phase["model"]
@@ -826,6 +910,10 @@ def _story_prompt(brief, story, worktree, feedback=""):
         f"'### Story {n}.{m}:' dans epics.md ci-dessous.\n\n"
         "Contraintes STRICTES :\n"
         "- N'implémente AUCUNE autre story que celle-ci.\n"
+        "- PRÉSERVE l'EXISTANT : le projet contient déjà du code et des fonctionnalités "
+        "(lis les fichiers présents AVANT d'écrire). Tu ajoutes/étends sans casser ni "
+        "supprimer ce qui existe, sauf si la story demande explicitement de le retirer. "
+        "N'ÉCRASE pas un fichier existant pour le réduire à ta seule story.\n"
         "- Ne modifie PAS les fichiers sous _bmad-output/ ni docs/ (gérés par le pipeline).\n"
         "- AUTO-REVUE avant de terminer : relis ton code contre les critères d'acceptation "
         "et corrige les écarts.\n"
@@ -835,6 +923,49 @@ def _story_prompt(brief, story, worktree, feedback=""):
     if feedback:
         prompt += f"\n\n## Retour à intégrer (révision)\n{feedback}"
     return prompt
+
+
+def _resolve_dev_model(repo, run_model=None):
+    """Modèle des phases dev/doc : run > projet (.ai-to-boost/config.json:dev_model) > env
+    (DEV_MODEL, défaut sonnet)."""
+    if run_model:
+        return run_model
+    try:
+        with open(
+            os.path.join(repo, ".ai-to-boost", "config.json"), encoding="utf-8"
+        ) as f:
+            m = (json.load(f) or {}).get("dev_model")
+        if m:
+            return m
+    except Exception:
+        pass
+    return DEV_MODEL
+
+
+def _pipe_dev_model(pid, repo):
+    with PIPELINES_LOCK:
+        run_model = (PIPELINES.get(pid) or {}).get("dev_model")
+    return _resolve_dev_model(repo, run_model)
+
+
+def _run_tools_escalate(worktree, repo, prompt, mode, tag, dev_model, max_turns=None):
+    """Appel claude -p outils sur `dev_model` (rapide) ; sur ÉCHEC DUR (exception/timeout),
+    rejoue UNE fois sur le modèle fort MODEL (escalade auto). Lève si l'escalade échoue
+    aussi, ou si dev_model == MODEL."""
+    try:
+        return _run_claude_tools(
+            worktree, repo, prompt, mode, tag, model=dev_model, max_turns=max_turns
+        )
+    except Exception as exc:
+        if dev_model == MODEL:
+            raise
+        print(
+            f"[pipe] {tag}: échec sur {dev_model} → escalade {MODEL} ({exc})",
+            flush=True,
+        )
+        return _run_claude_tools(
+            worktree, repo, prompt, mode, tag, model=MODEL, max_turns=max_turns
+        )
 
 
 def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
@@ -849,6 +980,9 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
         todo = [s for s in stories if s["status"] not in ("review", "done")]
     done, failed, total_cost = [], [], 0.0
     usage_by_story = {}
+    dev_model = _pipe_dev_model(
+        pid, repo
+    )  # rapide par défaut (sonnet), escalade -> opus
     for s in todo:
         sid = s["id"]
         try:
@@ -857,12 +991,14 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
             _write_commit(worktree, [SPRINT_REL], f"story {sid} in-progress")
             _inject_bmad(worktree)  # skills BMAD visibles pendant le dev
             try:
-                res = _run_claude_tools(
+                res = _run_tools_escalate(
                     worktree,
                     repo,
                     _story_prompt(brief, s, worktree, feedback),
                     "build",
                     f"pl-{pid}-{sid}",
+                    dev_model,
+                    max_turns=STORY_MAXTURNS,
                 )
             finally:
                 _eject_bmad(
@@ -945,12 +1081,13 @@ def _run_doc_phase(worktree, repo, brief, phase, pid, feedback=""):
     ni aux docs de planning), puis commit (no-op toléré)."""
     _inject_bmad(worktree)
     try:
-        res = _run_claude_tools(
+        res = _run_tools_escalate(
             worktree,
             repo,
             _doc_prompt(brief, worktree, feedback),
             "file",
             f"pl-{pid}-doc",
+            _pipe_dev_model(pid, repo),
         )
     finally:
         _eject_bmad(worktree)  # avant le commit (ne pas committer les symlinks)
@@ -1078,7 +1215,7 @@ def _finish_pipeline(pid, status):
     _pipe_callback(pid)
 
 
-def start_pipeline(prompt, repo, return_target=None):
+def start_pipeline(prompt, repo, return_target=None, dev_model=None):
     pid = uuid.uuid4().hex[:12]
     branch = f"pipeline/{pid}"
     worktree = os.path.join(WORKROOT, f"pl-{pid}")
@@ -1097,6 +1234,8 @@ def start_pipeline(prompt, repo, return_target=None):
             "phase_index": 0,
             "artifacts": {},
             "created": datetime.datetime.now().isoformat(timespec="seconds"),
+            # Override de modèle dev/doc pour CE run (None -> projet/env). Cf. _resolve_dev_model.
+            "dev_model": dev_model or None,
         }
     _persist_pipe(pid)
     threading.Thread(target=_run_pipeline, args=(pid,), daemon=True).start()
@@ -1922,7 +2061,9 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send(400, {"error": str(exc)})
             return
-        pid = start_pipeline(prompt, repo, data.get("return_target"))
+        pid = start_pipeline(
+            prompt, repo, data.get("return_target"), dev_model=data.get("dev_model")
+        )
         self._send(202, {"pipeline_id": pid, "status": "accepted"})
 
     def _post_job(self):
@@ -1970,7 +2111,9 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send(400, {"error": str(exc)})
             return
-        pid = start_pipeline(prompt, repo, data.get("return_target"))
+        pid = start_pipeline(
+            prompt, repo, data.get("return_target"), dev_model=data.get("dev_model")
+        )
         self._send(202, {"pipeline_id": pid, "status": "accepted"})
 
     def _post_resume(self):
