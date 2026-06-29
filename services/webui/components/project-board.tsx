@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Markdown } from "@/components/markdown";
 import { PersonaTag } from "@/components/persona-tag";
 import { StatusBadge } from "@/components/status-badge";
+import { TokenStat } from "@/components/token-stat";
 import {
   Card,
   CardContent,
@@ -34,7 +35,10 @@ export function ProjectBoard({ board }: { board: Board }) {
                 <CardTitle className="text-base">
                   Epic {e.n} — {e.title}
                 </CardTitle>
-                <StatusBadge status={e.status} />
+                <span className="flex shrink-0 items-center gap-2">
+                  <TokenStat tokens={e.tokens} />
+                  <StatusBadge status={e.status} />
+                </span>
               </div>
               {epicsPhase ? (
                 <PersonaTag
@@ -53,6 +57,7 @@ export function ProjectBoard({ board }: { board: Board }) {
                 >
                   <span className="min-w-0 truncate">{s.title}</span>
                   <span className="flex shrink-0 items-center gap-2">
+                    <TokenStat tokens={s.tokens} />
                     {s.status !== "backlog" && implPhase ? (
                       <PersonaTag
                         persona={implPhase.persona}
@@ -76,6 +81,7 @@ export function ProjectBoard({ board }: { board: Board }) {
             <DialogDescription className="flex items-center gap-2">
               <StatusBadge status={story?.status} />
               <code className="text-xs">{story?.id}</code>
+              <TokenStat tokens={story?.tokens} />
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3">

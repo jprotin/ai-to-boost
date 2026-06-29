@@ -10,6 +10,7 @@ import { LaunchPipeline } from "@/components/launch-pipeline";
 import { PipelineProgress } from "@/components/pipeline-progress";
 import { ProjectBoard } from "@/components/project-board";
 import { StatusBadge } from "@/components/status-badge";
+import { TokenStat } from "@/components/token-stat";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { Board } from "@/lib/api";
@@ -80,6 +81,12 @@ export function ProjectView({
             <code className="text-xs text-muted-foreground">
               {board.pipeline.branch}
             </code>
+          ) : null}
+          {board.pipeline.tokens ? (
+            <span className="flex items-center gap-1 text-muted-foreground">
+              <span className="text-xs">Total</span>
+              <TokenStat tokens={board.pipeline.tokens} />
+            </span>
           ) : null}
           {board.pipeline.status === "done" ? (
             <div className="ml-auto">

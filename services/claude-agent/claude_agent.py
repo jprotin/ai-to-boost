@@ -314,9 +314,18 @@ def _run_claude_tools(worktree, repo, prompt, mode, tag):
     if os.path.exists(audit_log):
         with open(audit_log, encoding="utf-8") as f:
             audit = [line.rstrip("\n") for line in f if line.strip()]
+    usage = result.get("usage") or {}
+    tokens = {
+        # entrée = prompt + cache (création + lecture), tel que consommé.
+        "input": (usage.get("input_tokens") or 0)
+        + (usage.get("cache_creation_input_tokens") or 0)
+        + (usage.get("cache_read_input_tokens") or 0),
+        "output": usage.get("output_tokens") or 0,
+    }
     return {
         "summary": result.get("result", ""),
         "cost_usd": result.get("total_cost_usd"),
+        "tokens": tokens,
         "audit": audit,
     }
 
@@ -822,6 +831,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
     else:
         todo = [s for s in stories if s["status"] not in ("review", "done")]
     done, failed, total_cost = [], [], 0.0
+    usage_by_story = {}
     for s in todo:
         sid = s["id"]
         try:
@@ -847,6 +857,8 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
             _git(worktree, "add", "-A")
             _git(worktree, "commit", "-m", f"pipeline(story {sid}): implémentation")
             total_cost += res.get("cost_usd") or 0.0
+            if res.get("tokens"):
+                usage_by_story[sid] = res["tokens"]
             done.append(sid)
         except Exception as exc:
             # Jette le travail partiel (timeout/erreur) mais garde le commit 'in-progress' :
@@ -864,6 +876,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
     with PIPELINES_LOCK:
         PIPELINES[pid]["impl_cost_usd"] = total_cost
         PIPELINES[pid]["impl_failed"] = failed
+        PIPELINES[pid].setdefault("usage_by_story", {}).update(usage_by_story)
     if not todo:
         return "implémentation : aucune story à traiter (déjà terminées)"
     return (
@@ -1267,12 +1280,14 @@ def _project_board(name):
         return None
 
     pipe, branch, worktree = {}, None, None
+    story_usage = {}
     try:
         with open(
             os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
         ) as f:
             pj = json.load(f) or {}
         branch, worktree = pj.get("branch"), pj.get("worktree")
+        story_usage = pj.get("usage_by_story") or {}
         pipe = {
             "id": pj.get("pipeline_id"),
             "status": pj.get("status"),
@@ -1317,9 +1332,16 @@ def _project_board(name):
         if em:
             epic_status[em.group(1)] = em.group(2)
 
+    def _add(acc, tok):
+        if tok:
+            acc["input"] += tok.get("input") or 0
+            acc["output"] += tok.get("output") or 0
+
     epics_out = []
+    pipe_tokens = {"input": 0, "output": 0}
     for e in _parse_epics(epics_md):
         stories = []
+        epic_tokens = {"input": 0, "output": 0}
         for s in e["stories"]:
             sid = f"{e['n']}-{s['m']}-{_slugify(s['title'])}"
             status = story_status.get(sid)
@@ -1330,25 +1352,35 @@ def _project_board(name):
                         sid, status = k, v
                         break
             detail = _read_project_text(repo, branch, worktree, f"{IMPL_DIR}/{sid}.md")
+            tok = story_usage.get(sid)
+            _add(epic_tokens, tok)
             stories.append(
                 {
                     "id": sid,
                     "title": s["title"],
                     "status": status or "backlog",
                     "detail": detail,
+                    "tokens": tok,
                 }
             )
+        _add(pipe_tokens, epic_tokens)
         epics_out.append(
             {
                 "n": e["n"],
                 "title": e["title"],
                 "status": epic_status.get(str(e["n"]), "backlog"),
                 "stories": stories,
+                "tokens": epic_tokens
+                if (epic_tokens["input"] or epic_tokens["output"])
+                else None,
             }
         )
     phases = [
         {"key": p["key"], "persona": p["persona"], "model": p["model"]} for p in PHASES
     ]
+    pipe["tokens"] = (
+        pipe_tokens if (pipe_tokens["input"] or pipe_tokens["output"]) else None
+    )
     return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
 
 

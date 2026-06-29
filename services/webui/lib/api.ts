@@ -12,17 +12,20 @@ export type Project = {
   pipeline_phase?: string;
 };
 
+export type Tokens = { input: number; output: number };
 export type Story = {
   id: string;
   title: string;
   status: string;
   detail?: string;
+  tokens?: Tokens | null;
 };
 export type Epic = {
   n: number;
   title: string;
   status: string;
   stories: Story[];
+  tokens?: Tokens | null;
 };
 export type Phase = { key: string; persona: string; model: string };
 export type Artifact = { key: string; title: string };
@@ -36,6 +39,7 @@ export type Board = {
     prompt?: string;
     awaiting?: string;
     artifacts?: Artifact[];
+    tokens?: Tokens | null;
   };
   epics: Epic[];
   phases?: Phase[];

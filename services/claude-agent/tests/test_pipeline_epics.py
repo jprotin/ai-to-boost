@@ -532,6 +532,56 @@ def test_project_artifacts():
             os.environ["XDG_CONFIG_HOME"] = saved
 
 
+def test_board_tokens():
+    """Le board remonte les tokens par story, la somme par epic et le total pipeline."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="tok-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        proj = os.path.join(d, "proj")
+        os.makedirs(os.path.join(proj, ".ai-to-boost"))
+        wt = os.path.join(d, "wt")
+        os.makedirs(os.path.join(wt, "_bmad-output/planning-artifacts"))
+        epics_md = "## Epic 1: Auth\n### Story 1.1: Créer un compte\n### Story 1.2: Se connecter\n"
+        with open(
+            os.path.join(wt, "_bmad-output/planning-artifacts/epics.md"), "w"
+        ) as f:
+            f.write(epics_md)
+        dest = os.path.join(wt, m.SPRINT_REL)
+        os.makedirs(os.path.dirname(dest))
+        with open(dest, "w") as f:
+            f.write(m._gen_sprint_status(m._parse_epics(epics_md), "P"))
+        with open(os.path.join(proj, ".ai-to-boost", "pipeline.json"), "w") as f:
+            json.dump(
+                {
+                    "pipeline_id": "x",
+                    "status": "awaiting_approval",
+                    "branch": "pipeline/x",
+                    "worktree": wt,
+                    "usage_by_story": {
+                        "1-1-crer-un-compte": {"input": 1000, "output": 200}
+                    },
+                },
+                f,
+            )
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump({"active": "proj", "projects": {"proj": {"path": proj}}}, f)
+
+        b = m._project_board("proj")
+        e = b["epics"][0]
+        st = {s["id"]: s for s in e["stories"]}
+        assert st["1-1-crer-un-compte"]["tokens"] == {"input": 1000, "output": 200}
+        assert st["1-2-se-connecter"]["tokens"] is None
+        assert e["tokens"] == {"input": 1000, "output": 200}
+        assert b["pipeline"]["tokens"] == {"input": 1000, "output": 200}
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
