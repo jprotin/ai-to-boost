@@ -632,6 +632,88 @@ def test_rehydrate_pipelines():
             os.environ["XDG_CONFIG_HOME"] = saved
 
 
+def test_pipeline_history_and_snapshot():
+    """Archive : history liste les runs (tri récent), snapshot reconstruit le board d'un
+    run passé depuis SA branche, artefact d'un run lu depuis la branche."""
+    saved = os.environ.get("XDG_CONFIG_HOME")
+    d = tempfile.mkdtemp(prefix="hist-")
+    try:
+        os.environ["XDG_CONFIG_HOME"] = d
+        proj = os.path.join(d, "proj")
+        g = _git_repo(proj)
+        # branche du run p1 avec les artefacts BMAD committés
+        g("checkout", "-b", "pipeline/p1")
+        os.makedirs(os.path.join(proj, "_bmad-output/planning-artifacts"))
+        os.makedirs(os.path.join(proj, os.path.dirname(m.SPRINT_REL)))
+        os.makedirs(os.path.join(proj, "docs"))
+        epics_md = "## Epic 1: Auth\n### Story 1.1: Créer un compte\n"
+        with open(
+            os.path.join(proj, "_bmad-output/planning-artifacts/epics.md"), "w"
+        ) as f:
+            f.write(epics_md)
+        with open(os.path.join(proj, m.SPRINT_REL), "w") as f:
+            f.write(m._gen_sprint_status(m._parse_epics(epics_md), "P"))
+        with open(os.path.join(proj, "docs/prd.md"), "w") as f:
+            f.write("# PRD — run1\nréalisé")
+        g("add", "-A")
+        g("commit", "-m", "run1")
+        g("checkout", "develop")
+        # snapshots (p1 récent, p0 ancien)
+        hdir = os.path.join(proj, ".ai-to-boost", "pipelines")
+        os.makedirs(hdir)
+        with open(os.path.join(hdir, "p1.json"), "w") as f:
+            json.dump(
+                {
+                    "pipeline_id": "p1",
+                    "branch": "pipeline/p1",
+                    "status": "done",
+                    "prompt": "besoin 1",
+                    "created": "2026-06-29T10:00:00",
+                    "artifacts": {"pm": "docs/prd.md", "epics": "x"},
+                    "usage_by_story": {
+                        "1-1-crer-un-compte": {"input": 500, "output": 90}
+                    },
+                },
+                f,
+            )
+        with open(os.path.join(hdir, "p0.json"), "w") as f:
+            json.dump(
+                {
+                    "pipeline_id": "p0",
+                    "branch": "pipeline/p0",
+                    "status": "stopped",
+                    "prompt": "besoin 0",
+                    "created": "2026-06-28T09:00:00",
+                },
+                f,
+            )
+        os.makedirs(os.path.join(d, "ai-to-boost"))
+        with open(os.path.join(d, "ai-to-boost", "projects.json"), "w") as f:
+            json.dump({"active": "proj", "projects": {"proj": {"path": proj}}}, f)
+
+        runs = m._pipeline_history("proj")
+        assert [r["id"] for r in runs] == ["p1", "p0"], runs  # tri récent->ancien
+        assert runs[0]["tokens"] == {"input": 500, "output": 90}
+        assert runs[0]["prompt"] == "besoin 1"
+
+        snap = m._pipeline_snapshot("proj", "p1")
+        assert snap["pipeline"]["id"] == "p1"
+        assert len(snap["epics"]) == 1 and snap["epics"][0]["title"] == "Auth"
+        keys = [a["key"] for a in snap["pipeline"]["artifacts"]]
+        assert "pm" in keys
+
+        art = m.project_artifact("proj", "pm", pid="p1")
+        assert "réalisé" in art["content"]
+        assert (
+            m.project_artifact("proj", "pm", pid="nope").get("error") == "run inconnu"
+        )
+    finally:
+        if saved is None:
+            os.environ.pop("XDG_CONFIG_HOME", None)
+        else:
+            os.environ["XDG_CONFIG_HOME"] = saved
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0

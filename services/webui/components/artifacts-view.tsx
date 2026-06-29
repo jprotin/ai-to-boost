@@ -11,10 +11,12 @@ export function ArtifactsView({
   name,
   artifacts,
   current,
+  pid,
 }: {
   name: string;
   artifacts: Artifact[];
   current?: string;
+  pid?: string; // run archivé : lit l'artefact depuis ce pipeline passé
 }) {
   const [selected, setSelected] = useState<string | undefined>(
     current && artifacts.some((a) => a.key === current)
@@ -30,9 +32,11 @@ export function ArtifactsView({
       setLoading(true);
       setError(null);
       try {
-        const r = await fetch(
-          `/api/projects/${encodeURIComponent(name)}/artifact/${encodeURIComponent(key)}`,
-        );
+        const base = `/api/projects/${encodeURIComponent(name)}`;
+        const url = pid
+          ? `${base}/history/${encodeURIComponent(pid)}/artifact/${encodeURIComponent(key)}`
+          : `${base}/artifact/${encodeURIComponent(key)}`;
+        const r = await fetch(url);
         const d = await r.json();
         if (!r.ok) throw new Error(d?.error ?? "erreur");
         setContent(d.content ?? "");
@@ -43,7 +47,7 @@ export function ArtifactsView({
         setLoading(false);
       }
     },
-    [name],
+    [name, pid],
   );
 
   useEffect(() => {
