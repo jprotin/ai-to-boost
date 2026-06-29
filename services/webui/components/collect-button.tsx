@@ -28,6 +28,7 @@ export function CollectButton({
   onCollected: () => void;
 }) {
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(false);
 
   async function collect() {
     setBusy(true);
@@ -43,6 +44,7 @@ export function CollectButton({
       const d = await r.json();
       if (!r.ok) throw new Error(d?.error ?? "échec de l'intégration");
       toast.success(`Intégré : ${d.branch} → ${d.base}`);
+      setOpen(false);
       onCollected();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "échec");
@@ -52,7 +54,7 @@ export function CollectButton({
   }
 
   return (
-    <AlertDialog>
+    <AlertDialog open={open} onOpenChange={setOpen}>
       <AlertDialogTrigger
         className={buttonVariants({ size: "sm" })}
         disabled={busy}

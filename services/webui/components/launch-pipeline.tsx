@@ -16,7 +16,13 @@ import {
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
 
-export function LaunchPipeline({ name }: { name: string }) {
+export function LaunchPipeline({
+  name,
+  onLaunched,
+}: {
+  name: string;
+  onLaunched?: () => void;
+}) {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
   const [loading, setLoading] = useState(false);
@@ -36,6 +42,7 @@ export function LaunchPipeline({ name }: { name: string }) {
       toast.success(`Pipeline lancé (${d.pipeline_id})`);
       setOpen(false);
       setPrompt("");
+      onLaunched?.(); // rafraîchit le board client + démarre le polling live
       router.refresh();
     } catch (e) {
       toast.error(e instanceof Error ? e.message : "échec du lancement");

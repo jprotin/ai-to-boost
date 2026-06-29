@@ -1514,7 +1514,8 @@ def project_artifact(name, key, pid=None):
             pj = json.load(f) or {}
         branch = pj.get("branch")
         worktree = None if pid else pj.get("worktree")  # archive = branche seule
-        rel = (pj.get("artifacts") or {}).get(key) or rel
+        # On garde le chemin CANONIQUE ARTIFACT_PATHS[key] : la valeur stockée dans
+        # artifacts{} peut être décorative (ex. epics : "epics.md (+sprint-status…)").
     except Exception:
         if pid:
             return {"error": "run inconnu"}

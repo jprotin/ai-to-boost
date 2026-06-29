@@ -75,7 +75,7 @@ export function ProjectBoard({ board }: { board: Board }) {
       </div>
 
       <Dialog open={Boolean(story)} onOpenChange={(o) => !o && setStory(null)}>
-        <DialogContent className="max-w-2xl">
+        <DialogContent className="max-w-2xl sm:max-w-3xl lg:max-w-5xl xl:max-w-6xl">
           <DialogHeader>
             <DialogTitle>{story?.title}</DialogTitle>
             <DialogDescription className="flex items-center gap-2">
@@ -84,7 +84,7 @@ export function ProjectBoard({ board }: { board: Board }) {
               <TokenStat tokens={story?.tokens} />
             </DialogDescription>
           </DialogHeader>
-          <div className="max-h-[60vh] overflow-auto rounded-md bg-muted p-3">
+          <div className="max-h-[70vh] overflow-auto rounded-md bg-muted p-4">
             {story?.detail?.trim() ? (
               <Markdown>{story.detail}</Markdown>
             ) : (
