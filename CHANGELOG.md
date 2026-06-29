@@ -24,6 +24,15 @@ versionnage [SemVer](https://semver.org/).
 
 ### Ajouté
 
+- **Tour de contrôle web — pilotage complet du pipeline** (lots F1–F6, ADR 0005/0008) :
+  intégration du résultat depuis la webui (board robuste + bouton « Récupérer le résultat »),
+  **création/suppression de projet**, **relecture des artefacts** (Brief/PRD/Architecture/Epics)
+  avant approbation, **stats de tokens** par story/epic/pipeline, **dashboard** agrégé, et
+  **archive/historique** des pipelines (PRD/epics/stories des runs passés, dates créé/terminé).
+- **Reprise des pipelines au redémarrage du worker** (ADR 0008) : réhydratation depuis
+  `pipeline.json` + snapshot par run ; plus de pipeline orphelin « running ».
+- **Documentation** : ADR 0008, [guide de déploiement & d'utilisation](docs/guide-deploiement.md),
+  runbook worker, MAJ runbook webui, README.
 - **Pipeline BMAD multi-persona / multi-LLM — B1** (ADR 0004) : le worker expose un moteur
   de pipeline (endpoints `POST /pipelines`, `GET /pipelines/<id>`, `POST /pipelines/<id>/resume`)
   qui déroule les personas BMAD avec jalons de validation, en plus de `/jobs` (one-shot,
