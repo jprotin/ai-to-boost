@@ -50,6 +50,10 @@ MAXTURNS = int(os.environ.get("AGENT_MAXTURNS", "30"))
 DEV_MODEL = os.environ.get("PIPELINE_DEV_MODEL", "sonnet")
 # max-turns abaissé pour une story (focalisée) ; surchargeable si besoin de plus d'exploration.
 STORY_MAXTURNS = int(os.environ.get("PIPELINE_STORY_MAXTURNS", "16"))
+# Gate de vérification : juge LLM (par story + acceptation finale) + tests si présents.
+# Désactivable (PIPELINE_VERIFY=false). Juge sur un modèle rapide.
+VERIFY = os.environ.get("PIPELINE_VERIFY", "true").lower() != "false"
+JUDGE_MODEL = os.environ.get("PIPELINE_JUDGE_MODEL", "sonnet")
 WORKROOT = os.environ.get(
     "AGENT_WORKROOT", os.path.expanduser("~/.local/share/claude-agent/worktrees")
 )
@@ -968,6 +972,162 @@ def _run_tools_escalate(worktree, repo, prompt, mode, tag, dev_model, max_turns=
         )
 
 
+def _verdict(text):
+    """Parse 'VERDICT: PASS|FAIL — raison'. Tolérant : PASS si verdict illisible (ne
+    bloque pas faussement sur une réponse hors-format)."""
+    mfail = re.search(r"VERDICT\s*[:\-]?\s*FAIL\b[ \-—:]*(.*)", text, re.I)
+    if mfail:
+        return False, (mfail.group(1).strip() or "non conforme")[:300]
+    return True, ""
+
+
+def _run_judge(worktree, prompt, model):
+    """claude -p LECTURE SEULE (Read/Grep/Glob) pour un verdict QA. Retourne le texte."""
+    env = {
+        k: v
+        for k, v in os.environ.items()
+        if k not in ("ANTHROPIC_API_KEY", "ANTHROPIC_AUTH_TOKEN")
+    }
+    env.setdefault("PATH", "/home/jprotin/.local/bin:/usr/bin:/bin")
+    cmd = [
+        CLAUDE,
+        "-p",
+        prompt,
+        "--model",
+        model,
+        "--output-format",
+        "json",
+        "--permission-mode",
+        "acceptEdits",
+        "--max-turns",
+        "8",
+        "--allowed-tools",
+        "Read",
+        "Grep",
+        "Glob",
+        "--disallowed-tools",
+        "Edit",
+        "Write",
+        "Bash",
+        "WebFetch",
+        "WebSearch",
+    ]
+    proc = subprocess.run(
+        cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=TIMEOUT
+    )
+    if proc.returncode != 0:
+        raise RuntimeError(proc.stderr.strip() or f"judge exit {proc.returncode}")
+    return json.loads(proc.stdout or "{}").get("result", "")
+
+
+def _story_section(epics_md, n, m):
+    """Extrait le bloc '### Story n.m: …' (titre + critères) d'epics.md."""
+    out, cap = [], False
+    pat = re.compile(rf"^###\s+Story\s+{n}\.{m}\s*:", re.I)
+    for ln in epics_md.splitlines():
+        if pat.match(ln.strip()):
+            cap = True
+            out.append(ln)
+            continue
+        if cap and re.match(r"^#{2,3}\s+", ln.strip()):
+            break
+        if cap:
+            out.append(ln)
+    return "\n".join(out).strip()
+
+
+def _judge_story(worktree, criteria, diff, summary, model):
+    """Verdict QA d'une story : (ok, raison). Tolérant si verdict illisible."""
+    prompt = (
+        "Tu es relecteur QA INDÉPENDANT et EXIGEANT. Détermine si la story est RÉELLEMENT "
+        "et CORRECTEMENT implémentée dans le code du répertoire courant (utilise Read/Grep "
+        "pour inspecter les fichiers). Refuse si : critères non couverts, code incomplet "
+        "(marqueurs « à faire », fonction vide, placeholder), ou existant cassé.\n\n"
+        f"## Story (critères d'acceptation)\n{criteria}\n\n"
+        f"## Diff produit par le dev\n{diff[:6000]}\n\n"
+        f"## Résumé du dev\n{summary[:1500]}\n\n"
+        "Termine IMPÉRATIVEMENT par UNE seule ligne :\n"
+        "VERDICT: PASS\nou\nVERDICT: FAIL — <raison courte et actionnable>"
+    )
+    try:
+        return _verdict(_run_judge(worktree, prompt, model))
+    except Exception as exc:
+        print(f"[judge] story illisible/échec ({exc}) → toléré PASS", flush=True)
+        return True, ""
+
+
+def _pytest_available():
+    try:
+        return (
+            subprocess.run(
+                ["python3", "-c", "import pytest"], capture_output=True, timeout=15
+            ).returncode
+            == 0
+        )
+    except Exception:
+        return False
+
+
+def _run_tests(worktree):
+    """Exécute les tests du projet SI ses dépendances sont réellement présentes (évite les
+    faux échecs : npm sans node_modules, pytest non installé). 'pass' | 'fail:<x>' | None."""
+    pkg = os.path.join(worktree, "package.json")
+    if os.path.isfile(pkg) and os.path.isdir(os.path.join(worktree, "node_modules")):
+        try:
+            with open(pkg, encoding="utf-8") as f:
+                has_test = '"test"' in f.read()
+        except Exception:
+            has_test = False
+        if has_test:
+            r = subprocess.run(
+                ["npm", "test", "--silent"],
+                cwd=worktree,
+                capture_output=True,
+                text=True,
+                timeout=300,
+            )
+            return (
+                "pass"
+                if r.returncode == 0
+                else "fail:" + (r.stdout + r.stderr).strip()[-600:]
+            )
+    has_py = os.path.isfile(os.path.join(worktree, "pytest.ini")) or os.path.isfile(
+        os.path.join(worktree, "pyproject.toml")
+    )
+    if has_py and _pytest_available():
+        r = subprocess.run(
+            ["python3", "-m", "pytest", "-q"],
+            cwd=worktree,
+            capture_output=True,
+            text=True,
+            timeout=300,
+        )
+        return (
+            "pass"
+            if r.returncode == 0
+            else "fail:" + (r.stdout + r.stderr).strip()[-600:]
+        )
+    return None
+
+
+def _judge_acceptance(worktree, brief, model):
+    """Acceptation GLOBALE : le livrable répond-il au besoin initial ? (ok, raison)."""
+    prompt = (
+        "Tu es relecteur d'ACCEPTATION. Le projet du répertoire courant est censé répondre "
+        "au BESOIN ci-dessous. Inspecte le code RÉELLEMENT présent (Read/Grep/Glob) et juge "
+        "si un UTILISATEUR obtiendrait le résultat attendu (livrable réellement fonctionnel "
+        "et démontrable, pas seulement des bouts de code épars).\n\n"
+        f"## Besoin initial\n{brief}\n\n"
+        "Termine IMPÉRATIVEMENT par UNE seule ligne :\n"
+        "VERDICT: PASS\nou\nVERDICT: FAIL — <ce qui manque pour que ça marche>"
+    )
+    try:
+        return _verdict(_run_judge(worktree, prompt, model))
+    except Exception as exc:
+        print(f"[judge] acceptation illisible/échec ({exc}) → toléré PASS", flush=True)
+        return True, ""
+
+
 def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
     """Boucle dev-story dans le worktree pipeline (cumulatif) : chaque story non terminée
     est implémentée via claude -p AVEC outils, statut maj dans sprint-status.yaml + fichier
@@ -978,44 +1138,102 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
         todo = [s for s in stories if s["status"] != "done"]
     else:
         todo = [s for s in stories if s["status"] not in ("review", "done")]
+    if not todo:
+        return "implémentation : aucune story à traiter (déjà terminées)"
     done, failed, total_cost = [], [], 0.0
     usage_by_story = {}
-    dev_model = _pipe_dev_model(
-        pid, repo
-    )  # rapide par défaut (sonnet), escalade -> opus
+    dev_model = _pipe_dev_model(pid, repo)  # rapide (sonnet), escalade qualité -> opus
+    try:
+        with open(
+            os.path.join(worktree, "_bmad-output/planning-artifacts/epics.md"),
+            encoding="utf-8",
+        ) as f:
+            epics_md = f.read()
+    except Exception:
+        epics_md = ""
+
     for s in todo:
         sid = s["id"]
+        n, mnum = (sid.split("-") + ["", ""])[:2]
+        criteria = _story_section(epics_md, n, mnum) or sid
         try:
             _set_story_status(worktree, sid, "in-progress")
             _rollup_epics(worktree)  # l'epic parent passe in-progress
             _write_commit(worktree, [SPRINT_REL], f"story {sid} in-progress")
-            _inject_bmad(worktree)  # skills BMAD visibles pendant le dev
-            try:
-                res = _run_tools_escalate(
+            base_rev = _git(worktree, "rev-parse", "HEAD")
+
+            # Tentatives : dev_model puis escalade QUALITÉ (Opus) si le juge refuse.
+            models = [dev_model] + ([MODEL] if (VERIFY and dev_model != MODEL) else [])
+            ok, reason, res = False, "non implémentée", None
+            for am in models:
+                _inject_bmad(worktree)  # skills BMAD visibles pendant le dev
+                try:
+                    res = _run_claude_tools(
+                        worktree,
+                        repo,
+                        _story_prompt(brief, s, worktree, feedback),
+                        "build",
+                        f"pl-{pid}-{sid}",
+                        model=am,
+                        max_turns=STORY_MAXTURNS,
+                    )
+                except Exception as exc:  # échec dur -> tentative suivante (Opus)
+                    reason = f"erreur d'exécution sur {am}: {exc}"
+                    _eject_bmad(worktree)
+                    _git(worktree, "reset", "--hard", base_rev, check=False)
+                    _git(worktree, "clean", "-fd", check=False)
+                    continue
+                _eject_bmad(worktree)  # avant commit (ne pas committer les symlinks)
+                _git(worktree, "add", "-A")
+                _git(
                     worktree,
-                    repo,
-                    _story_prompt(brief, s, worktree, feedback),
-                    "build",
-                    f"pl-{pid}-{sid}",
-                    dev_model,
-                    max_turns=STORY_MAXTURNS,
+                    "commit",
+                    "-m",
+                    f"pipeline(story {sid}): implémentation ({am})",
+                    check=False,
                 )
-            finally:
-                _eject_bmad(
-                    worktree
-                )  # avant tout commit (ne pas committer les symlinks)
-            _set_story_status(worktree, sid, "review")
-            _rollup_epics(worktree)  # epic done si toutes ses stories le sont
-            _write_story_md(worktree, sid, "review", res.get("summary", ""))
-            _git(worktree, "add", "-A")
-            _git(worktree, "commit", "-m", f"pipeline(story {sid}): implémentation")
-            total_cost += res.get("cost_usd") or 0.0
-            if res.get("tokens"):
-                usage_by_story[sid] = res["tokens"]
-            done.append(sid)
+                if not VERIFY:
+                    ok = True
+                    break
+                diff = _git(worktree, "diff", base_rev, "HEAD", check=False)
+                ok, reason = _judge_story(
+                    worktree, criteria, diff, res.get("summary", ""), JUDGE_MODEL
+                )
+                if ok:
+                    break
+                print(f"[verify] story {sid}: QA FAIL ({am}) — {reason}", flush=True)
+
+            if ok:
+                _set_story_status(worktree, sid, "review")
+                _rollup_epics(worktree)  # epic done si toutes ses stories le sont
+                _write_story_md(worktree, sid, "review", res.get("summary", ""))
+                _git(worktree, "add", "-A")
+                _git(
+                    worktree,
+                    "commit",
+                    "-m",
+                    f"pipeline(story {sid}): review",
+                    check=False,
+                )
+                total_cost += res.get("cost_usd") or 0.0
+                if res.get("tokens"):
+                    usage_by_story[sid] = res["tokens"]
+                done.append(sid)
+            else:
+                # Échec HONNÊTE : la story reste 'in-progress' (PAS 'review'/'done'),
+                # consignée avec la raison QA. Le code partiel est conservé (rejouable).
+                _set_story_status(worktree, sid, "in-progress")
+                _rollup_epics(worktree)
+                _git(worktree, "add", "-A")
+                _git(
+                    worktree,
+                    "commit",
+                    "-m",
+                    f"pipeline(story {sid}): QA non conforme",
+                    check=False,
+                )
+                failed.append({"id": sid, "error": "QA: " + reason})
         except Exception as exc:
-            # Jette le travail partiel (timeout/erreur) mais garde le commit 'in-progress' :
-            # la story sera rejouée à la reprise. Le worktree pipeline est isolé.
             try:
                 _git(worktree, "reset", "--hard", "HEAD", check=False)
                 _git(worktree, "clean", "-fd", check=False)
@@ -1026,16 +1244,32 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
             PIPELINES[pid].setdefault("stories", {})[sid] = (
                 "review" if sid in done else "error"
             )
+
+    # Acceptation GLOBALE du livrable (tests + juge), au 1er passage (pas à chaque revise).
+    acceptance = None
+    if VERIFY and not feedback:
+        tests = _run_tests(worktree)
+        acc_ok, acc_reason = _judge_acceptance(worktree, brief, JUDGE_MODEL)
+        if tests and tests.startswith("fail"):
+            acc_ok = False
+            acc_reason = (acc_reason + " | " if acc_reason else "") + "tests en échec"
+        acceptance = {"ok": acc_ok, "reason": acc_reason, "tests": tests or "aucun"}
+
     with PIPELINES_LOCK:
         PIPELINES[pid]["impl_cost_usd"] = total_cost
         PIPELINES[pid]["impl_failed"] = failed
         PIPELINES[pid].setdefault("usage_by_story", {}).update(usage_by_story)
-    if not todo:
-        return "implémentation : aucune story à traiter (déjà terminées)"
-    return (
-        f"implémentation : {len(done)}/{len(todo)} stories en review, "
-        f"{len(failed)} échec(s)"
-    )
+        if acceptance is not None:
+            PIPELINES[pid]["acceptance"] = acceptance
+
+    msg = f"implémentation : {len(done)}/{len(todo)} stories OK, {len(failed)} échec(s)"
+    if acceptance is not None:
+        msg += (
+            " ; acceptation : OK"
+            if acceptance["ok"]
+            else f" ; acceptation : KO — {acceptance['reason']}"
+        )
+    return msg
 
 
 def _doc_prompt(brief, worktree, feedback=""):
@@ -1595,6 +1829,7 @@ def _project_board(name):
             "branch": branch,
             "prompt": pj.get("prompt"),  # besoin original (description du projet)
             "awaiting": pj.get("awaiting"),
+            "acceptance": pj.get("acceptance"),  # gate de vérification (juge + tests)
             "artifacts": [
                 {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
                 for k in ARTIFACT_PATHS  # ordre des phases
@@ -1685,6 +1920,7 @@ def _pipeline_snapshot(name, pid):
         "created": st.get("created"),
         "finished": st.get("finished"),
         "awaiting": st.get("awaiting"),
+        "acceptance": st.get("acceptance"),
         "artifacts": [
             {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
             for k in ARTIFACT_PATHS

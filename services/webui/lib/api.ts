@@ -40,6 +40,7 @@ export type Board = {
     awaiting?: string;
     artifacts?: Artifact[];
     tokens?: Tokens | null;
+    acceptance?: { ok: boolean; reason?: string; tests?: string } | null;
   };
   epics: Epic[];
   phases?: Phase[];
