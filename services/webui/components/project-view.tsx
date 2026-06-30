@@ -75,6 +75,36 @@ export function ProjectView({
         />
       ) : null}
 
+      {board.pipeline?.acceptance ? (
+        <div
+          className={`rounded-lg border p-3 text-sm ${
+            board.pipeline.acceptance.ok
+              ? "border-emerald-500/40 bg-emerald-500/10"
+              : "border-amber-500/50 bg-amber-500/10"
+          }`}
+        >
+          <span className="font-medium">
+            {board.pipeline.acceptance.ok
+              ? "✅ Acceptation — le livrable répond au besoin"
+              : "⚠️ Acceptation — à vérifier avant d'approuver"}
+          </span>
+          {board.pipeline.acceptance.reason ? (
+            <span className="mt-0.5 block text-muted-foreground">
+              {board.pipeline.acceptance.reason}
+            </span>
+          ) : null}
+          {board.pipeline.acceptance.tests &&
+          board.pipeline.acceptance.tests !== "aucun" ? (
+            <span className="mt-0.5 block text-xs text-muted-foreground">
+              Tests :{" "}
+              {board.pipeline.acceptance.tests.startsWith("fail")
+                ? "en échec"
+                : "OK"}
+            </span>
+          ) : null}
+        </div>
+      ) : null}
+
       {board.pipeline?.status && !ACTIVE.has(board.pipeline.status) ? (
         <div className="flex flex-wrap items-center gap-2 text-sm">
           <StatusBadge status={board.pipeline.status} />

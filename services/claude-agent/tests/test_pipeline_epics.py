@@ -768,6 +768,23 @@ def test_resolve_dev_model():
     assert m._resolve_dev_model(d, "haiku") == "haiku"  # run gagne sur projet
 
 
+def test_verdict_parsing():
+    assert m._verdict("blabla\nVERDICT: PASS") == (True, "")
+    ok, r = m._verdict("analyse...\nVERDICT: FAIL — toggle absent")
+    assert ok is False and "toggle absent" in r
+    assert m._verdict("réponse hors format")[0] is True  # tolérant -> PASS
+
+
+def test_story_section():
+    md = (
+        "## Epic 1: Auth\n### Story 1.1: Créer un compte\n- email valide\n- mot de passe\n"
+        "### Story 1.2: Se connecter\n- session\n## Epic 2: X\n"
+    )
+    sec = m._story_section(md, "1", "1")
+    assert "Story 1.1" in sec and "email valide" in sec
+    assert "Se connecter" not in sec  # s'arrête à la story suivante
+
+
 def main():
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     failed = 0
