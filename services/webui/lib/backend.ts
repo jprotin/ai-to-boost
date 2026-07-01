@@ -14,6 +14,8 @@ export const BACKEND = {
   litellm: process.env.LITELLM_URL ?? "http://host.docker.internal:4000",
   // Whisper (speaches, STT compatible OpenAI) — service compose sur ai-assistant-net.
   whisper: process.env.WHISPER_URL ?? "http://whisper:8000",
+  // Service de requête RAG (FastEmbed nomic + Qdrant) — service compose.
+  rag: process.env.RAG_URL ?? "http://rag:8100",
 };
 
 // Modèle STT chargé par le service whisper (aligné sur telegram-poller).

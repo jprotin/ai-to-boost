@@ -24,6 +24,7 @@ volumes:
   whisper-cache: # cache des modèles Whisper (HuggingFace), évite le re-téléchargement
   n8n-data: # données n8n (/home/node/.n8n : config, clés, binaires)
   qdrant-data: # base vectorielle Qdrant (RAG)
+  rag-cache: # cache FastEmbed (modèle nomic) du service de requête RAG
   webui-data: # SQLite des conversations de la web-app (ADR 0005)
 
 services:
@@ -208,6 +209,25 @@ services:
     volumes:
       - qdrant-data:/qdrant/storage
 
+  # Service de requête RAG — interroge Qdrant avec le même stack FastEmbed que
+  # l'ingestion (compat vecteur garantie). Consommé par la webui (chat projet).
+  rag:
+    build:
+      context: ./services/rag
+    container_name: rag
+    restart: unless-stopped
+    depends_on:
+      - qdrant
+    networks:
+      - ai-assistant-net
+    environment:
+      QDRANT_URL: http://qdrant:6333
+      EMBEDDING_MODEL: nomic-ai/nomic-embed-text-v1.5
+      RAG_PORT: "8100"
+      FASTEMBED_CACHE_PATH: /cache
+    volumes:
+      - rag-cache:/cache
+
   # ADR 0005 — web-app tour de contrôle (Next.js). Local-only (127.0.0.1). Le BFF
   # (côté serveur) parle au worker/bridge (hôte) et à LiteLLM (réseau docker) ; le
   # navigateur ne voit que le BFF (AGENT_TOKEN jamais exposé au client).
@@ -235,6 +255,7 @@ services:
       LITELLM_URL: http://litellm:4000
       WHISPER_URL: http://whisper:8000
       WHISPER_MODEL: Systran/faster-whisper-medium
+      RAG_URL: http://rag:8100
       WEBUI_DB_PATH: /app/data/webui.db
     volumes:
       - webui-data:/app/data

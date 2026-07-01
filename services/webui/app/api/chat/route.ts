@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/auth";
-import { getProjectBoard } from "@/lib/api";
+import {
+  getProjectArtifact,
+  getProjectBoard,
+  getProjectHistory,
+} from "@/lib/api";
+import { ragSearch } from "@/lib/rag";
 import {
   addMessage,
   conversationExists,
@@ -68,24 +73,126 @@ async function generate(
   return { reply: String(data?.choices?.[0]?.message?.content ?? "").trim() };
 }
 
-// Préambule système décrivant l'état du projet (chat dédié projet, C3.4).
-async function projectContext(project: string): Promise<string> {
+// Budgets de contexte (caractères) — évite de saturer les modèles locaux (32k).
+const ARTIFACT_PER = 1600;
+const ARTIFACT_CAP = 7000;
+
+// Préambule système au périmètre complet du projet (chat dédié projet) : board +
+// agents/phases + contenu des artefacts + archives + RAG projet-first. Chaque
+// section dégrade en douceur (une source absente n'empêche pas les autres).
+async function projectContext(project: string, query: string): Promise<string> {
+  const sections: string[] = [];
+
+  let board: Awaited<ReturnType<typeof getProjectBoard>> = null;
   try {
-    const b = await getProjectBoard(project);
-    if (!b) return "";
-    const lines = b.epics.map(
+    board = await getProjectBoard(project);
+  } catch {
+    /* board indisponible → on continue */
+  }
+
+  // 1. Board (epics/stories) + entête.
+  if (board) {
+    const lines = board.epics.map(
       (e) =>
         `- Epic ${e.n} « ${e.title} » [${e.status}] : ` +
         e.stories.map((s) => `${s.title} [${s.status}]`).join(", "),
     );
-    return (
-      `Tu assistes sur le projet « ${project} » (pipeline : ${b.pipeline?.status ?? "—"}` +
-      `${b.pipeline?.phase ? " / " + b.pipeline.phase : ""}).\n` +
-      (lines.length ? `Epics & stories :\n${lines.join("\n")}` : "Pas encore de board.")
+    sections.push(
+      `Tu assistes sur le projet « ${project} » (pipeline : ${board.pipeline?.status ?? "—"}` +
+        `${board.pipeline?.phase ? " / " + board.pipeline.phase : ""}).\n` +
+        (lines.length
+          ? `Epics & stories :\n${lines.join("\n")}`
+          : "Pas encore de board."),
     );
-  } catch {
-    return "";
+
+    // 2. Agents / phases du pipeline (persona → modèle). Le modèle est un alias
+    //    (local-gemma, claude, sonnet…) ; la version exacte vit dans la config.
+    if (board.phases?.length) {
+      sections.push(
+        "Agents du pipeline (phase → persona → modèle) :\n" +
+          board.phases
+            .map((p) => `- ${p.key} — ${p.persona} → ${p.model}`)
+            .join("\n"),
+      );
+    }
   }
+
+  // 3. Contenu des artefacts du run courant (tronqué, sous budget global).
+  const artifacts = board?.pipeline?.artifacts ?? [];
+  if (artifacts.length) {
+    const contents = await Promise.all(
+      artifacts.map((a) =>
+        getProjectArtifact(project, a.key).then((c) => ({
+          title: a.title,
+          content: c,
+        })),
+      ),
+    );
+    let used = 0;
+    const parts: string[] = [];
+    for (const { title, content } of contents) {
+      const c = content.trim();
+      if (!c || used >= ARTIFACT_CAP) continue;
+      const slice = c.slice(0, ARTIFACT_PER);
+      used += slice.length;
+      parts.push(
+        `### ${title}\n${slice}${c.length > slice.length ? "\n…(tronqué)" : ""}`,
+      );
+    }
+    if (parts.length) {
+      sections.push(
+        "Contenu des artefacts du projet :\n" + parts.join("\n\n"),
+      );
+    }
+  }
+
+  // 4. Archives (runs passés) — liste courte.
+  const runs = await getProjectHistory(project);
+  if (runs.length) {
+    sections.push(
+      "Historique des pipelines (archives) :\n" +
+        runs
+          .slice(0, 10)
+          .map(
+            (r) =>
+              `- ${r.created ?? "?"} [${r.status ?? "?"}] ${r.prompt ?? "(sans description)"}`,
+          )
+          .join("\n"),
+    );
+  }
+
+  // 5. RAG — projet d'abord ; le commun est labellisé « transverse » car il peut
+  //    concerner d'autres projets (évite la pollution constatée).
+  const hits = await ragSearch(project, query, 5);
+  if (hits.length) {
+    const projColl = `proj-${project.toLowerCase().replace(/[^a-z0-9_-]/g, "-")}`;
+    const fmt = (label: string, list: typeof hits) =>
+      list.length
+        ? `${label} :\n` +
+          list
+            .map((h) => `[${h.source}]\n${h.text.slice(0, 600).trim()}`)
+            .join("\n\n")
+        : "";
+    const proj = fmt(
+      "Extraits RAG du projet",
+      hits.filter((h) => h.collection === projColl),
+    );
+    const commun = fmt(
+      "Extraits RAG transverses (peuvent ne PAS concerner ce projet)",
+      hits.filter((h) => h.collection !== projColl),
+    );
+    sections.push(
+      [
+        "Documentation indexée (RAG). Appuie-toi en priorité sur les extraits du projet ; cite la source [fichier].",
+        proj,
+        commun,
+      ]
+        .filter(Boolean)
+        .join("\n\n"),
+    );
+  }
+
+  return sections.join("\n\n").trim();
 }
 
 export async function POST(req: Request) {
@@ -117,7 +224,9 @@ export async function POST(req: Request) {
   }
 
   const project = body.project ?? null;
-  const system = project ? await projectContext(project) : "";
+  const system = project
+    ? await projectContext(project, lastUser.content)
+    : "";
 
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), 120_000);
