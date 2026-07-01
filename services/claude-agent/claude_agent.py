@@ -2297,6 +2297,17 @@ class Handler(BaseHTTPRequestHandler):
         except ValueError as exc:
             self._send(400, {"error": str(exc)})
             return
+        # Garde anti-pipeline-concurrent : un seul pipeline actif par projet.
+        try:
+            with open(
+                os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
+            ) as f:
+                cur = (json.load(f) or {}).get("status")
+        except Exception:
+            cur = None
+        if cur in ("accepted", "running", "awaiting_approval"):
+            self._send(409, {"error": "un pipeline est déjà en cours sur ce projet"})
+            return
         pid = start_pipeline(
             prompt, repo, data.get("return_target"), dev_model=data.get("dev_model")
         )
