@@ -18,7 +18,7 @@
     },
     {
       "parameters": {
-        "jsCode": "// Normalise les entrées vers {command, payload, return_target, source, mode, pipe_url, pipe_body}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet mode = 'file';\nlet payload = text;\nlet pipe_url = '';\nlet pipe_body = {};\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  const rest = m[2].trim();\n  if (c === 'chat' || c === 'claude') { command = c; payload = rest; }\n  else if (c === 'code' || c === 'build') { command = 'code'; mode = (c === 'build') ? 'build' : 'file'; payload = rest; }\n  else if (c === 'run') { command = 'pipeline'; pipe_url = '/pipelines'; pipe_body = { prompt: rest, return_target }; }\n  else if (c === 'approve' || c === 'stop' || c === 'revise') {\n    command = 'pipeline'; pipe_url = '/pipelines/resume';\n    const decision = (c === 'revise') ? ('revise:' + rest) : c;\n    pipe_body = { decision, return_target };\n  }\n}\nreturn [{ json: { command, payload, return_target, source, mode, pipe_url, pipe_body } }];\n"
+        "jsCode": "// Normalise les entrées vers {command, payload, return_target, source, mode, pipe_url, pipe_body}.\nconst b = $json.body ?? $json;\nconst text = (b.text || '').trim();\nconst return_target = b.return_target ?? b.chat_id ?? null;\nconst source = b.source ?? (b.chat_id ? 'telegram' : 'api');\n\nlet command = 'chat';\nlet mode = 'file';\nlet payload = text;\nlet pipe_url = '';\nlet pipe_body = {};\nconst m = text.match(/^\\/(\\w+)\\s*([\\s\\S]*)$/);\nif (m) {\n  const c = m[1].toLowerCase();\n  const rest = m[2].trim();\n  if (c === 'chat' || c === 'claude') { command = c; payload = rest; }\n  else if (c === 'code' || c === 'build') { command = 'code'; mode = (c === 'build') ? 'build' : 'file'; payload = rest; }\n  else if (c === 'run') { command = 'pipeline'; pipe_url = '/pipelines'; pipe_body = { prompt: rest, return_target }; }\n  else if (c === 'approve' || c === 'stop' || c === 'revise') {\n    command = 'pipeline'; pipe_url = '/pipelines/resume';\n    const decision = (c === 'revise') ? ('revise:' + rest) : c;\n    pipe_body = { decision, return_target };\n  }\n  else if (c === 'collect') { command = 'pipeline'; pipe_url = '/pipelines/collect'; pipe_body = { return_target }; }\n  else if (c === 'board' || c === 'status') { command = 'pipeline'; pipe_url = '/pipelines/board'; pipe_body = { return_target }; }\n}\nreturn [{ json: { command, payload, return_target, source, mode, pipe_url, pipe_body } }];\n"
       },
       "id": "a0000000-0000-0000-0000-000000000002",
       "name": "Normalisation",
@@ -317,7 +317,7 @@
             {
               "id": "rp",
               "name": "reply",
-              "value": "=🚀 {{ $json.pipeline_id ? ('pipeline ' + $json.pipeline_id + ' : ' + $json.status) : ($json.error ? ('⚠️ ' + $json.error) : 'commande pipeline envoyée') }}",
+              "value": "=🚀 {{ $json.reply ? $json.reply : ($json.pipeline_id ? ('pipeline ' + $json.pipeline_id + ' : ' + $json.status) : ($json.error ? ('⚠️ ' + $json.error) : 'commande pipeline envoyée')) }}",
               "type": "string"
             }
           ]

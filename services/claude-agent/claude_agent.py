@@ -1524,6 +1524,78 @@ def resume_pipeline_by_target(decision, return_target):
     return resume_pipeline(pid, decision)
 
 
+def _pipeline_state_for_target(return_target):
+    """État du pipeline le plus récent d'un canal (TOUT statut) — pour /collect et /board
+    Telegram, où seul le return_target (chat_id) est connu."""
+    if not return_target:
+        return None
+    match = None
+    with PIPELINES_LOCK:
+        for st in PIPELINES.values():  # ordonné par insertion → garde le dernier
+            if str(st.get("return_target")) == str(return_target):
+                match = st
+    return match
+
+
+def _project_name_for_repo(repo):
+    """Nom de projet enregistré pour un chemin de repo (reverse registre)."""
+    for name, p in (_read_registry().get("projects") or {}).items():
+        if (p or {}).get("path") == repo:
+            return name
+    return None
+
+
+def collect_pipeline_by_target(return_target):
+    """/collect Telegram : résout le projet du canal puis intègre sa branche pipeline.
+    Renvoie {reply} (message prêt à afficher côté n8n)."""
+    st = _pipeline_state_for_target(return_target)
+    if not st:
+        return {"reply": "⚠️ aucun pipeline connu pour ce canal"}
+    name = _project_name_for_repo(st.get("repo") or "")
+    if not name:
+        return {"reply": "⚠️ projet introuvable pour ce canal"}
+    res = collect_pipeline(name)
+    if res.get("error"):
+        return {"reply": f"⚠️ {res['error']}"}
+    ds = (res.get("diff_stat") or "").strip()
+    return {
+        "reply": f"📥 Résultat intégré dans « {name} » ({res.get('base')})."
+        + (f"\n{ds}" if ds else "")
+    }
+
+
+def board_text_for_target(return_target):
+    """/board Telegram : résumé texte compact du board du projet du canal. {reply}."""
+    st = _pipeline_state_for_target(return_target)
+    if not st:
+        return {"reply": "⚠️ aucun pipeline connu pour ce canal"}
+    name = _project_name_for_repo(st.get("repo") or "")
+    board = _project_board(name) if name else None
+    if not board:
+        return {"reply": "⚠️ board indisponible pour ce canal"}
+    pipe = board.get("pipeline") or {}
+    head = f"📊 « {name} » — statut {pipe.get('status') or '—'}"
+    if pipe.get("phase"):
+        head += f" / {pipe['phase']}"
+    lines = [head]
+    epics = board.get("epics") or []
+    for e in epics:
+        stories = e.get("stories") or []
+        done = sum(1 for s in stories if s.get("status") == "done")
+        lines.append(
+            f"• Epic {e.get('n')} « {e.get('title')} » [{e.get('status')}]"
+            f" — {done}/{len(stories)} stories done"
+        )
+    acc = pipe.get("acceptance")
+    if acc:
+        lines.append(
+            "✅ acceptation OK" if acc.get("ok") else "⚠️ acceptation à vérifier"
+        )
+    if not epics:
+        lines.append("(pas encore de board)")
+    return {"reply": "\n".join(lines)}
+
+
 def _registry_path():
     cfg = os.environ.get("XDG_CONFIG_HOME") or os.path.join(
         os.path.expanduser("~"), ".config"
@@ -2197,6 +2269,10 @@ class Handler(BaseHTTPRequestHandler):
             self._post_pipeline()
         elif self.path == "/pipelines/resume":
             self._post_resume_by_target()
+        elif self.path == "/pipelines/collect":
+            self._post_collect_by_target()
+        elif self.path == "/pipelines/board":
+            self._post_board_by_target()
         elif self.path.startswith("/pipelines/") and self.path.endswith("/resume"):
             self._post_resume()
         elif self.path.startswith("/projects/") and self.path.endswith("/resume"):
@@ -2384,6 +2460,24 @@ class Handler(BaseHTTPRequestHandler):
         decision = (data.get("decision") or "").strip()
         res = resume_pipeline_by_target(decision, data.get("return_target"))
         self._send(400 if res.get("error") else 202, res)
+
+    def _post_collect_by_target(self):
+        """/collect depuis un canal : résout le projet via return_target puis intègre."""
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        self._send(200, collect_pipeline_by_target(data.get("return_target")))
+
+    def _post_board_by_target(self):
+        """/board depuis un canal : résumé texte du board du projet via return_target."""
+        try:
+            data = self._read_json()
+        except Exception as exc:
+            self._send(400, {"error": f"bad json: {exc}"})
+            return
+        self._send(200, board_text_for_target(data.get("return_target")))
 
 
 def _rehydrate_pipelines():
