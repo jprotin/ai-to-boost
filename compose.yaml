@@ -233,6 +233,8 @@ services:
       WORKER_URL: http://host.docker.internal:8089
       BRIDGE_URL: http://host.docker.internal:8088
       LITELLM_URL: http://litellm:4000
+      WHISPER_URL: http://whisper:8000
+      WHISPER_MODEL: Systran/faster-whisper-medium
       WEBUI_DB_PATH: /app/data/webui.db
     volumes:
       - webui-data:/app/data

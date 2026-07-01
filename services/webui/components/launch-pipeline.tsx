@@ -15,6 +15,7 @@ import {
   DialogTrigger,
 } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { MicButton } from "@/components/mic-button";
 
 export function LaunchPipeline({
   name,
@@ -66,12 +67,20 @@ export function LaunchPipeline({
             (analyst → PM → architecte → epics → implémentation).
           </DialogDescription>
         </DialogHeader>
-        <Textarea
-          value={prompt}
-          onChange={(e) => setPrompt(e.target.value)}
-          placeholder="Ex. une page HTML qui affiche l'heure de Paris en temps réel"
-          className="min-h-[7rem]"
-        />
+        <div className="flex items-start gap-2">
+          <Textarea
+            value={prompt}
+            onChange={(e) => setPrompt(e.target.value)}
+            placeholder="Ex. une page HTML qui affiche l'heure de Paris en temps réel"
+            className="min-h-[7rem] flex-1"
+          />
+          <MicButton
+            disabled={loading}
+            onTranscript={(t) =>
+              setPrompt((prev) => (prev ? `${prev} ${t}` : t))
+            }
+          />
+        </div>
         <div className="flex items-center gap-2 text-sm">
           <span className="text-muted-foreground">Modèle dev :</span>
           <Button
