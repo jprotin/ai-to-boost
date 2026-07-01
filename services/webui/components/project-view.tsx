@@ -171,7 +171,14 @@ export function ProjectView({
         </TabsContent>
 
         <TabsContent value="chat">
-          <Chat project={name} />
+          <Chat
+            project={name}
+            pipeline={{
+              status: board.pipeline?.status,
+              phase: board.pipeline?.phase,
+            }}
+            onPipelineAction={refetch}
+          />
         </TabsContent>
       </Tabs>
     </div>
