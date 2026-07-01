@@ -42,14 +42,15 @@ HOST = os.environ.get("AGENT_HOST", "0.0.0.0")
 PORT = int(os.environ.get("AGENT_PORT", "8089"))
 TOKEN = os.environ.get("AGENT_TOKEN", "")
 MODEL = os.environ.get("AGENT_MODEL", "opus")
-TIMEOUT = int(os.environ.get("AGENT_TIMEOUT", "600"))
+TIMEOUT = int(os.environ.get("AGENT_TIMEOUT", "1200"))
 MAXTURNS = int(os.environ.get("AGENT_MAXTURNS", "30"))
 # Pipeline — curseur de modèle des phases dev/doc (par story). Défaut rapide (sonnet) ;
 # l'architecte et l'ESCALADE sur échec dur restent sur MODEL (opus). Résolution effective :
 # run > projet (.ai-to-boost/config.json:dev_model) > cet env.
 DEV_MODEL = os.environ.get("PIPELINE_DEV_MODEL", "sonnet")
-# max-turns abaissé pour une story (focalisée) ; surchargeable si besoin de plus d'exploration.
-STORY_MAXTURNS = int(os.environ.get("PIPELINE_STORY_MAXTURNS", "16"))
+# max-turns par story : assez haut pour finir une story réelle (16 était trop bas →
+# error_max_turns → travail partiel jeté). Surchargeable par env.
+STORY_MAXTURNS = int(os.environ.get("PIPELINE_STORY_MAXTURNS", "40"))
 # Gate de vérification : juge LLM (par story + acceptation finale) + tests si présents.
 # Désactivable (PIPELINE_VERIFY=false). Juge sur un modèle rapide.
 VERIFY = os.environ.get("PIPELINE_VERIFY", "true").lower() != "false"
@@ -318,9 +319,28 @@ def _run_claude_tools(worktree, repo, prompt, mode, tag, model=None, max_turns=N
     proc = subprocess.run(
         cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=TIMEOUT
     )
+    try:
+        result = json.loads(proc.stdout or "{}")
+    except Exception:
+        result = {}
+    truncated = False
     if proc.returncode != 0:
-        raise RuntimeError(proc.stderr.strip() or f"claude exit {proc.returncode}")
-    result = json.loads(proc.stdout or "{}")
+        # error_max_turns = succès PARTIEL : claude a travaillé mais atteint la limite
+        # de tours (rc=1). On NE lève PAS et on CONSERVE le code produit — l'appelant le
+        # committe et le juge évalue le diff partiel. Tout autre rc≠0 = vrai échec : on
+        # remonte le détail du stdout JSON (subtype/errors), pas seulement stderr (vide).
+        truncated = (
+            result.get("subtype") == "error_max_turns"
+            or result.get("terminal_reason") == "max_turns"
+        )
+        if not truncated:
+            detail = (
+                result.get("result")
+                or "; ".join(result.get("errors") or [])
+                or proc.stderr.strip()
+                or f"claude exit {proc.returncode}"
+            )
+            raise RuntimeError(detail)
     audit = []
     if os.path.exists(audit_log):
         with open(audit_log, encoding="utf-8") as f:
@@ -338,6 +358,7 @@ def _run_claude_tools(worktree, repo, prompt, mode, tag, model=None, max_turns=N
         "cost_usd": result.get("total_cost_usd"),
         "tokens": tokens,
         "audit": audit,
+        "truncated": truncated,  # True si max_turns atteint (travail partiel conservé)
     }
 
 
@@ -1201,6 +1222,8 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
                 )
                 if ok:
                     break
+                if res.get("truncated"):
+                    reason = f"tronqué (max_turns={STORY_MAXTURNS}), QA : {reason}"
                 print(f"[verify] story {sid}: QA FAIL ({am}) — {reason}", flush=True)
 
             if ok:

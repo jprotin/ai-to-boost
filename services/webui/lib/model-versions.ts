@@ -12,11 +12,13 @@ import { BACKEND, LITELLM_KEY } from "@/lib/backend";
 
 // Le curseur dev/doc résout claude → opus (AGENT_MODEL) pour l'architecte et
 // selon le curseur (sonnet par défaut) pour dev/doc. Voir claude_agent.py.
+// Alias résolus par le CLI `claude -p` (2.1.x) : sonnet → claude-sonnet-5,
+// opus → dernier build Opus. Libellés indicatifs (le build exact est côté CLI).
 const CLAUDE_LABELS: Record<string, string> = {
   claude:
-    "Claude (forfait) — architecte : Opus 4.8 ; dev/doc : selon le curseur (Sonnet 4.6 par défaut) ; escalade : Opus 4.8",
-  opus: "Claude Opus 4.8 (forfait)",
-  sonnet: "Claude Sonnet 4.6 (forfait)",
+    "Claude (forfait) — architecte : Opus ; dev/doc : selon le curseur (Sonnet 5 par défaut) ; escalade : Opus",
+  opus: "Claude Opus (forfait)",
+  sonnet: "Claude Sonnet 5 (forfait)",
 };
 
 type Cache = { at: number; map: Record<string, string> };
