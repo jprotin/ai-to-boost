@@ -68,3 +68,46 @@ export async function getProjectBoard(name: string): Promise<Board | null> {
   if (!r.ok) throw new Error(`worker board: HTTP ${r.status}`);
   return r.json();
 }
+
+export type Run = {
+  id?: string;
+  prompt?: string;
+  status?: string;
+  created?: string;
+  finished?: string;
+  branch?: string;
+  tokens?: Tokens | null;
+};
+
+// Contenu Markdown d'un artefact du run courant ("" si absent/erreur).
+export async function getProjectArtifact(
+  name: string,
+  key: string,
+): Promise<string> {
+  try {
+    const r = await fetch(
+      `${BACKEND.worker}/projects/${encodeURIComponent(name)}/artifact/${encodeURIComponent(key)}`,
+      { headers: { Authorization: `Bearer ${AGENT_TOKEN}` }, cache: "no-store" },
+    );
+    if (!r.ok) return "";
+    const d = (await r.json().catch(() => ({}))) as { content?: string };
+    return d.content ?? "";
+  } catch {
+    return "";
+  }
+}
+
+// Runs archivés d'un projet ([] si aucun/erreur).
+export async function getProjectHistory(name: string): Promise<Run[]> {
+  try {
+    const r = await fetch(
+      `${BACKEND.worker}/projects/${encodeURIComponent(name)}/history`,
+      { headers: { Authorization: `Bearer ${AGENT_TOKEN}` }, cache: "no-store" },
+    );
+    if (!r.ok) return [];
+    const d = (await r.json().catch(() => ({}))) as { runs?: Run[] };
+    return Array.isArray(d.runs) ? d.runs : [];
+  } catch {
+    return [];
+  }
+}
