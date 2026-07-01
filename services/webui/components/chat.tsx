@@ -25,6 +25,7 @@ import {
   SheetTrigger,
 } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
+import { MicButton } from "@/components/mic-button";
 
 type Msg = { role: "user" | "assistant"; content: string };
 type Model = { id: string; label: string };
@@ -250,6 +251,12 @@ export function Chat({ project }: { project?: string }) {
             placeholder="Votre message… (Entrée pour envoyer, Maj+Entrée pour un saut de ligne)"
             className="min-h-[3rem] resize-none"
             disabled={loading}
+          />
+          <MicButton
+            disabled={loading}
+            onTranscript={(t) =>
+              setInput((prev) => (prev ? `${prev} ${t}` : t))
+            }
           />
           <Button
             onClick={send}

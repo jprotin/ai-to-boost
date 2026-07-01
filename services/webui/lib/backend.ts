@@ -12,7 +12,13 @@ export const BACKEND = {
   bridge: process.env.BRIDGE_URL ?? "http://host.docker.internal:8088",
   // LiteLLM (modèles locaux gemma/qwen) pour le chat local.
   litellm: process.env.LITELLM_URL ?? "http://host.docker.internal:4000",
+  // Whisper (speaches, STT compatible OpenAI) — service compose sur ai-assistant-net.
+  whisper: process.env.WHISPER_URL ?? "http://whisper:8000",
 };
+
+// Modèle STT chargé par le service whisper (aligné sur telegram-poller).
+export const WHISPER_MODEL =
+  process.env.WHISPER_MODEL ?? "Systran/faster-whisper-medium";
 
 export const AGENT_TOKEN = process.env.AGENT_TOKEN ?? "";
 // Token Bearer du bridge claude -p et clé maître LiteLLM (chat). Côté serveur uniquement.
