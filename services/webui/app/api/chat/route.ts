@@ -6,6 +6,7 @@ import {
   getProjectHistory,
 } from "@/lib/api";
 import { ragSearch } from "@/lib/rag";
+import { resolveModelVersions } from "@/lib/model-versions";
 import {
   addMessage,
   conversationExists,
@@ -105,8 +106,7 @@ async function projectContext(project: string, query: string): Promise<string> {
           : "Pas encore de board."),
     );
 
-    // 2. Agents / phases du pipeline (persona → modèle). Le modèle est un alias
-    //    (local-gemma, claude, sonnet…) ; la version exacte vit dans la config.
+    // 2. Agents / phases du pipeline (persona → modèle alias).
     if (board.phases?.length) {
       sections.push(
         "Agents du pipeline (phase → persona → modèle) :\n" +
@@ -114,6 +114,20 @@ async function projectContext(project: string, query: string): Promise<string> {
             .map((p) => `- ${p.key} — ${p.persona} → ${p.model}`)
             .join("\n"),
       );
+
+      // 2b. Versions exactes des alias effectivement utilisés (local via LiteLLM,
+      //     Claude via libellés — voir lib/model-versions).
+      const versions = await resolveModelVersions(
+        board.phases.map((p) => p.model),
+      );
+      const lines = Object.entries(versions).map(
+        ([alias, version]) => `- ${alias} = ${version}`,
+      );
+      if (lines.length) {
+        sections.push(
+          "Versions exactes des modèles :\n" + lines.join("\n"),
+        );
+      }
     }
   }
 
