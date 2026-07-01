@@ -20,9 +20,11 @@ import { MicButton } from "@/components/mic-button";
 export function LaunchPipeline({
   name,
   onLaunched,
+  disabled,
 }: {
   name: string;
   onLaunched?: () => void;
+  disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -55,7 +57,11 @@ export function LaunchPipeline({
 
   return (
     <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90">
+      <DialogTrigger
+        disabled={disabled}
+        title={disabled ? "Un pipeline est déjà en cours sur ce projet" : undefined}
+        className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-3 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:pointer-events-none disabled:opacity-50"
+      >
         <Rocket className="size-4" />
         Lancer un pipeline
       </DialogTrigger>

@@ -143,7 +143,7 @@ export function ProjectView({
             <TabsTrigger value="archive">Archive</TabsTrigger>
             <TabsTrigger value="chat">Chat projet</TabsTrigger>
           </TabsList>
-          <LaunchPipeline name={name} onLaunched={refetch} />
+          <LaunchPipeline name={name} onLaunched={refetch} disabled={active} />
         </div>
 
         <TabsContent value="artifacts">
