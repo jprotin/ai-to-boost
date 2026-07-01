@@ -1,7 +1,8 @@
 import { LogOut } from "lucide-react";
 import { auth } from "@/auth";
-import { getAvailableModels, getHealth } from "@/lib/health";
 import { logout } from "@/lib/auth-actions";
+import { CHAT_MODELS } from "@/lib/models";
+import { BackendHealth } from "@/components/backend-health";
 import { ThemeSelect } from "@/components/theme-select";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -12,17 +13,8 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 
-function HealthBadge({ ok }: { ok: boolean }) {
-  return ok ? (
-    <Badge variant="default">OK</Badge>
-  ) : (
-    <Badge variant="destructive">indisponible</Badge>
-  );
-}
-
 export default async function SettingsPage() {
   const session = await auth();
-  const [health, models] = await Promise.all([getHealth(), getAvailableModels()]);
 
   return (
     <div className="space-y-6">
@@ -36,19 +28,8 @@ export default async function SettingsPage() {
           <CardHeader>
             <CardTitle className="text-base">Backend</CardTitle>
           </CardHeader>
-          <CardContent className="space-y-2 text-sm">
-            <div className="flex items-center justify-between">
-              <span>Worker (pipelines / projets)</span>
-              <HealthBadge ok={health.worker} />
-            </div>
-            <div className="flex items-center justify-between">
-              <span>Bridge (Claude forfait)</span>
-              <HealthBadge ok={health.bridge} />
-            </div>
-            <div className="flex items-center justify-between">
-              <span>LiteLLM (modèles locaux)</span>
-              <HealthBadge ok={health.litellm} />
-            </div>
+          <CardContent>
+            <BackendHealth />
           </CardContent>
         </Card>
 
@@ -57,17 +38,11 @@ export default async function SettingsPage() {
             <CardTitle className="text-base">Modèles disponibles</CardTitle>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2">
-            {models.length === 0 ? (
-              <span className="text-sm text-muted-foreground">
-                Aucun modèle disponible (bridge / Ollama).
-              </span>
-            ) : (
-              models.map((m) => (
-                <Badge key={m.id} variant="secondary">
-                  {m.label}
-                </Badge>
-              ))
-            )}
+            {CHAT_MODELS.map((m) => (
+              <Badge key={m.id} variant="secondary">
+                {m.label}
+              </Badge>
+            ))}
           </CardContent>
         </Card>
 

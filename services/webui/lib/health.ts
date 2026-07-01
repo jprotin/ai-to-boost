@@ -1,6 +1,5 @@
 import "server-only";
-import { AGENT_TOKEN, BACKEND, BRIDGE_TOKEN, LITELLM_KEY } from "./backend";
-import { CHAT_MODELS } from "./models";
+import { AGENT_TOKEN, BACKEND, BRIDGE_TOKEN } from "./backend";
 
 async function fetchJson(
   url: string,
@@ -32,20 +31,4 @@ export async function getHealth() {
     bridge: Boolean(bridge),
     litellm: Boolean(litellm),
   };
-}
-
-// Modèles réellement disponibles (bridge sain + Ollama chargés via LiteLLM /health).
-export async function getAvailableModels(): Promise<{ id: string; label: string }[]> {
-  const [bridge, litellm] = await Promise.all([
-    fetchJson(`${BACKEND.bridge}/health`, { Authorization: `Bearer ${BRIDGE_TOKEN}` }, 6000),
-    fetchJson(`${BACKEND.litellm}/health`, { Authorization: `Bearer ${LITELLM_KEY}` }, 12000),
-  ]);
-  const claudeOk = (bridge as { status?: string } | null)?.status === "ok";
-  const endpoints =
-    (litellm as { healthy_endpoints?: { model?: string }[] } | null)
-      ?.healthy_endpoints ?? [];
-  const healthy = endpoints.map((e) => String(e.model ?? "").toLowerCase());
-  return CHAT_MODELS.filter((m) =>
-    m.kind === "claude" ? claudeOk : healthy.some((h) => m.match && h.includes(m.match)),
-  ).map((m) => ({ id: m.id, label: m.label }));
 }
