@@ -68,11 +68,11 @@ export function LiveStream({ name }: { name: string }) {
         <Activity className="size-4" />
         Voir en direct
       </DialogTrigger>
-      <DialogContent className="max-w-2xl">
+      <DialogContent className="max-w-2xl sm:max-w-3xl lg:max-w-5xl xl:max-w-6xl">
         <DialogHeader>
           <DialogTitle>Déroulement en direct</DialogTitle>
         </DialogHeader>
-        <div className="max-h-[60vh] space-y-1 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
+        <div className="max-h-[70vh] space-y-1 overflow-auto rounded-md bg-muted p-3 font-mono text-xs">
           {events.length === 0 ? (
             <p className="text-muted-foreground">
               En attente d&apos;activité de l&apos;IA…
