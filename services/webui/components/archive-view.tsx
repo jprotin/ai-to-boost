@@ -5,6 +5,7 @@ import { ArtifactsView } from "@/components/artifacts-view";
 import { ProjectBoard } from "@/components/project-board";
 import { StatusBadge } from "@/components/status-badge";
 import { TokenStat } from "@/components/token-stat";
+import { DurationStat } from "@/components/duration-stat";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import type { Board, Tokens } from "@/lib/api";
@@ -17,6 +18,7 @@ type Run = {
   finished?: string;
   branch?: string;
   tokens?: Tokens | null;
+  duration_s?: number | null;
 };
 
 // "2026-06-29T10:00:00" -> "29/06 10:00" (vide -> "—").
@@ -94,6 +96,7 @@ export function ArchiveView({ name }: { name: string }) {
               </span>
             </span>
             <span className="flex shrink-0 items-center gap-2">
+              <DurationStat seconds={run.duration_s} />
               <TokenStat tokens={run.tokens} />
               <StatusBadge status={run.status} />
             </span>

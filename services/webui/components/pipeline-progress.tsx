@@ -1,8 +1,9 @@
 "use client";
 
 import { Check, Clock, Loader2 } from "lucide-react";
-import type { Phase } from "@/lib/api";
+import type { Phase, PhaseTiming } from "@/lib/api";
 import { cn } from "@/lib/utils";
+import { fmtDuration } from "@/components/duration-stat";
 import { PersonaTag } from "@/components/persona-tag";
 import { Card, CardContent } from "@/components/ui/card";
 
@@ -18,11 +19,14 @@ export function PipelineProgress({
   status,
   phase,
   phases,
+  timings,
 }: {
   status?: string;
   phase?: string;
   phases?: Phase[];
+  timings?: PhaseTiming[];
 }) {
+  const secByPhase = new Map((timings ?? []).map((t) => [t.key, t.seconds]));
   // Affiché seulement tant que le pipeline est en cours / en attente.
   if (!status || !["accepted", "running", "awaiting_approval"].includes(status)) {
     return null;
@@ -86,6 +90,11 @@ export function PipelineProgress({
                   <span className="size-3 rounded-full border" />
                 )}
                 {p.label}
+                {secByPhase.has(p.key) ? (
+                  <span className="font-mono text-[10px] text-muted-foreground">
+                    {fmtDuration(secByPhase.get(p.key)!)}
+                  </span>
+                ) : null}
               </li>
             );
           })}

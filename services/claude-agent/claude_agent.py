@@ -27,6 +27,7 @@ Config (env, cf. .env) :
 """
 
 import datetime
+import time
 import json
 import os
 import re
@@ -571,6 +572,15 @@ ARTIFACT_PATHS = {p["key"]: p["artifact"] for p in PHASES if p.get("artifact")}
 def _set_pipe(pid, **kw):
     with PIPELINES_LOCK:
         PIPELINES[pid].update(kw)
+    _persist_pipe(pid)
+
+
+def _accum_time(pid, bucket, key, seconds):
+    """Cumule un temps (s) dans PIPELINES[pid][bucket][key] (ex. timing_by_phase),
+    puis persiste. Cumulatif : une phase rejouée (révision) additionne son temps."""
+    with PIPELINES_LOCK:
+        d = PIPELINES[pid].setdefault(bucket, {})
+        d[key] = round((d.get(key) or 0) + seconds, 1)
     _persist_pipe(pid)
 
 
@@ -1189,6 +1199,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
         return "implémentation : aucune story à traiter (déjà terminées)"
     done, failed, total_cost = [], [], 0.0
     usage_by_story = {}
+    timing_by_story = {}  # durée (s) par story
     dev_model = _pipe_dev_model(pid, repo)  # rapide (sonnet), escalade qualité -> opus
     try:
         with open(
@@ -1208,6 +1219,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
 
     for s in todo:
         sid = s["id"]
+        _ts = time.monotonic()  # chrono de la story
         n, mnum = (sid.split("-") + ["", ""])[:2]
         criteria = _story_section(epics_md, n, mnum) or sid
         try:
@@ -1306,6 +1318,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
             except Exception:
                 pass
             failed.append({"id": sid, "error": str(exc)})
+        timing_by_story[sid] = round(time.monotonic() - _ts, 1)
         with PIPELINES_LOCK:
             PIPELINES[pid].setdefault("stories", {})[sid] = (
                 "review" if sid in done else "error"
@@ -1325,6 +1338,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
         PIPELINES[pid]["impl_cost_usd"] = total_cost
         PIPELINES[pid]["impl_failed"] = failed
         PIPELINES[pid].setdefault("usage_by_story", {}).update(usage_by_story)
+        PIPELINES[pid].setdefault("timing_by_story", {}).update(timing_by_story)
         if acceptance is not None:
             PIPELINES[pid]["acceptance"] = acceptance
 
@@ -1422,7 +1436,11 @@ def _run_pipeline(pid):
             while idx < len(PHASES):
                 phase = PHASES[idx]
                 _set_pipe(pid, status="running", phase=phase["key"], phase_index=idx)
+                _t0 = time.monotonic()
                 art = _dispatch_phase(worktree, brief, phase, repo=st["repo"], pid=pid)
+                _accum_time(
+                    pid, "timing_by_phase", phase["key"], time.monotonic() - _t0
+                )
                 with PIPELINES_LOCK:
                     PIPELINES[pid].setdefault("artifacts", {})[phase["key"]] = art
                 if phase["checkpoint"]:
@@ -1452,6 +1470,7 @@ def _revise_pipeline(pid, feedback):
             idx = st["checkpoint_index"]
             phase = PHASES[idx]
             _set_pipe(pid, status="running", phase=phase["key"])
+            _t0 = time.monotonic()
             art = _dispatch_phase(
                 st["worktree"],
                 st["prompt"],
@@ -1460,6 +1479,7 @@ def _revise_pipeline(pid, feedback):
                 repo=st["repo"],
                 pid=pid,
             )
+            _accum_time(pid, "timing_by_phase", phase["key"], time.monotonic() - _t0)
             _set_pipe(
                 pid,
                 status="awaiting_approval",
@@ -1861,11 +1881,29 @@ def _latest_pipeline_branch(repo):
     return None
 
 
-def _build_board(name, repo, branch, worktree, story_usage, pipe):
-    """Construit le board (epics/stories + statuts + détail + tokens) depuis une
-    branche/worktree donnés. `pipe` = métadonnées pipeline. Réutilisé par le board
-    COURANT et l'ARCHIVE (snapshot d'un run passé, lu depuis sa branche)."""
+def _pipeline_wall_seconds(created, finished):
+    """Durée mur (s) du pipeline : created→finished, ou created→maintenant si en cours.
+    Inclut les attentes de validation humaine. None si created illisible."""
+    if not created:
+        return None
+    try:
+        t0 = datetime.datetime.fromisoformat(created)
+        t1 = (
+            datetime.datetime.fromisoformat(finished)
+            if finished
+            else datetime.datetime.now()
+        )
+        return round((t1 - t0).total_seconds(), 1)
+    except Exception:
+        return None
+
+
+def _build_board(name, repo, branch, worktree, story_usage, pipe, story_timing=None):
+    """Construit le board (epics/stories + statuts + détail + tokens + durées) depuis
+    une branche/worktree donnés. `pipe` = métadonnées pipeline (dont timing_by_phase,
+    created, finished). Réutilisé par le board COURANT et l'ARCHIVE."""
     story_usage = story_usage or {}
+    story_timing = story_timing or {}
     if not pipe.get("artifacts"):
         pipe["artifacts"] = [
             {"key": k, "title": ARTIFACT_TITLES.get(k, k)}
@@ -1896,6 +1934,7 @@ def _build_board(name, repo, branch, worktree, story_usage, pipe):
     for e in _parse_epics(epics_md):
         stories = []
         epic_tokens = {"input": 0, "output": 0}
+        epic_dur = 0.0
         for s in e["stories"]:
             sid = f"{e['n']}-{s['m']}-{_slugify(s['title'])}"
             status = story_status.get(sid)
@@ -1907,7 +1946,9 @@ def _build_board(name, repo, branch, worktree, story_usage, pipe):
                         break
             detail = _read_project_text(repo, branch, worktree, f"{IMPL_DIR}/{sid}.md")
             tok = story_usage.get(sid)
+            dur = story_timing.get(sid)
             _add(epic_tokens, tok)
+            epic_dur += dur or 0
             stories.append(
                 {
                     "id": sid,
@@ -1915,6 +1956,7 @@ def _build_board(name, repo, branch, worktree, story_usage, pipe):
                     "status": status or "backlog",
                     "detail": detail,
                     "tokens": tok,
+                    "duration_s": dur,
                 }
             )
         _add(pipe_tokens, epic_tokens)
@@ -1927,6 +1969,7 @@ def _build_board(name, repo, branch, worktree, story_usage, pipe):
                 "tokens": epic_tokens
                 if (epic_tokens["input"] or epic_tokens["output"])
                 else None,
+                "duration_s": round(epic_dur, 1) if epic_dur else None,
             }
         )
     phases = [
@@ -1934,6 +1977,15 @@ def _build_board(name, repo, branch, worktree, story_usage, pipe):
     ]
     pipe["tokens"] = (
         pipe_tokens if (pipe_tokens["input"] or pipe_tokens["output"]) else None
+    )
+    # Durées : par phase (temps IA actif), total actif, total mur (inclut attentes).
+    tbp = pipe.get("timing_by_phase") or {}
+    pipe["phase_timings"] = [
+        {"key": p["key"], "seconds": tbp[p["key"]]} for p in PHASES if p["key"] in tbp
+    ]
+    pipe["active_s"] = round(sum(tbp.values()), 1) if tbp else None
+    pipe["duration_s"] = _pipeline_wall_seconds(
+        pipe.get("created"), pipe.get("finished")
     )
     return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
 
@@ -1952,7 +2004,7 @@ def _project_board(name):
         return None
 
     pipe, branch, worktree = {}, None, None
-    story_usage = {}
+    story_usage, pj = {}, {}
     try:
         with open(
             os.path.join(repo, ".ai-to-boost", "pipeline.json"), encoding="utf-8"
@@ -1973,6 +2025,10 @@ def _project_board(name):
                 for k in ARTIFACT_PATHS  # ordre des phases
                 if k in (pj.get("artifacts") or {})
             ],
+            # Durées (Phase 1 timings) : le board dérive duration_s/active_s/phase_timings.
+            "timing_by_phase": pj.get("timing_by_phase") or {},
+            "created": pj.get("created"),
+            "finished": pj.get("finished"),
         }
     except Exception:
         pass
@@ -1984,7 +2040,9 @@ def _project_board(name):
         if branch and not pipe.get("branch"):
             pipe["branch"] = branch
 
-    return _build_board(name, repo, branch, worktree, story_usage, pipe)
+    return _build_board(
+        name, repo, branch, worktree, story_usage, pipe, pj.get("timing_by_story")
+    )
 
 
 def _project_repo(name):
@@ -2029,6 +2087,9 @@ def _pipeline_history(name):
                 "finished": st.get("finished"),
                 "branch": st.get("branch"),
                 "tokens": {"input": tin, "output": tout} if (tin or tout) else None,
+                "duration_s": _pipeline_wall_seconds(
+                    st.get("created"), st.get("finished")
+                ),
             }
         )
     runs.sort(key=lambda r: r.get("created") or "", reverse=True)
@@ -2064,10 +2125,17 @@ def _pipeline_snapshot(name, pid):
             for k in ARTIFACT_PATHS
             if k in (st.get("artifacts") or {})
         ],
+        "timing_by_phase": st.get("timing_by_phase") or {},
     }
     # Archive : lecture depuis la branche (immuable), pas du worktree (réutilisé/retiré).
     return _build_board(
-        name, repo, st.get("branch"), None, st.get("usage_by_story"), pipe
+        name,
+        repo,
+        st.get("branch"),
+        None,
+        st.get("usage_by_story"),
+        pipe,
+        st.get("timing_by_story"),
     )
 
 
