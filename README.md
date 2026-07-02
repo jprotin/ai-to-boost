@@ -34,8 +34,12 @@ archive) et prérequis détaillés : **[guide de déploiement & d'utilisation](d
 
 ## Documentation
 
+- **[Architecture d'ensemble](docs/architecture.md)** — services, ports, flux, état, sécurité
 - **[Guide de déploiement & d'utilisation](docs/guide-deploiement.md)** — de l'install au parcours complet
+- **[Variables d'environnement](docs/environment-variables.md)** — référence par service
+- **[Dépannage](docs/troubleshooting.md)** — problèmes fréquents centralisés
 - **[Décisions d'architecture (ADR)](docs/adr/)** — 0001 socle → 0008 persistance/archive pipelines
+- **[Audits](docs/audits/)** — documentation, portabilité locale, cloud/SaaS
 - **Runbooks** ([worker](docs/runbooks/worker-claude-agent.md), [webui](docs/runbooks/webui.md),
   [modèles/LiteLLM](docs/runbooks/phase1-litellm.md), [ai2b](docs/runbooks/ai2b.md), …)
 - **[CHANGELOG](CHANGELOG.md)**
