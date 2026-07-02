@@ -8,6 +8,7 @@ import { Chat } from "@/components/chat";
 import { CollectButton } from "@/components/collect-button";
 import { JalonBanner } from "@/components/jalon-banner";
 import { LaunchPipeline } from "@/components/launch-pipeline";
+import { LiveStream } from "@/components/live-stream";
 import { PipelineProgress } from "@/components/pipeline-progress";
 import { ProjectBoard } from "@/components/project-board";
 import { StatusBadge } from "@/components/status-badge";
@@ -154,7 +155,10 @@ export function ProjectView({
             <TabsTrigger value="archive">Archive</TabsTrigger>
             <TabsTrigger value="chat">Chat projet</TabsTrigger>
           </TabsList>
-          <LaunchPipeline name={name} onLaunched={refetch} disabled={active} />
+          <div className="flex items-center gap-2">
+            <LiveStream name={name} />
+            <LaunchPipeline name={name} onLaunched={refetch} disabled={active} />
+          </div>
         </div>
 
         <TabsContent value="artifacts">

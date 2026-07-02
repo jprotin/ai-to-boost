@@ -26,6 +26,7 @@ Config (env, cf. .env) :
   AGENT_FORBID       repos interdits comme cible (défaut = repo ai-to-boost)
 """
 
+import collections
 import datetime
 import time
 import json
@@ -275,6 +276,56 @@ def _guard_settings():
     )
 
 
+def _run_claude_stream(cmd, worktree, env, live_pid, live_story):
+    """Exécute claude en stream-json (Popen) et pousse les actions dans le flux LIVE.
+    Retourne (result_final, returncode, stderr_text) — même sémantique que le mode
+    bufferisé (le dernier événement 'result' porte usage/session_id/subtype/etc.)."""
+    scmd = list(cmd)
+    oi = scmd.index("--output-format")
+    scmd[oi + 1] = "stream-json"
+    scmd.append("--verbose")
+    if live_story:
+        _live_push(live_pid, "phase", f"▶ Story {live_story}", live_story)
+    proc = subprocess.Popen(
+        scmd,
+        cwd=worktree,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    watchdog = threading.Timer(TIMEOUT, proc.kill)  # timeout dur (kill sur deadline)
+    watchdog.start()
+    err_chunks = []
+    err_t = threading.Thread(target=lambda: err_chunks.append(proc.stderr.read() or ""))
+    err_t.daemon = True
+    err_t.start()
+    result = {}
+    try:
+        for line in proc.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                e = json.loads(line)
+            except Exception:
+                continue
+            t = e.get("type")
+            if t == "assistant":
+                for b in e.get("message", {}).get("content") or []:
+                    if b.get("type") == "tool_use":
+                        _live_push(live_pid, "tool", _fmt_tool_event(b), live_story)
+                    elif b.get("type") == "text" and (b.get("text") or "").strip():
+                        _live_push(live_pid, "text", b["text"].strip(), live_story)
+            elif t == "result":
+                result = e
+    finally:
+        proc.wait()
+        watchdog.cancel()
+        err_t.join(timeout=2)
+    return result, proc.returncode, "".join(err_chunks).strip()
+
+
 def _run_claude_tools(
     worktree,
     repo,
@@ -286,6 +337,8 @@ def _run_claude_tools(
     session_id=None,
     resume=False,
     effort=None,
+    live_pid=None,
+    live_story=None,
 ):
     """Cœur d'appel `claude -p` AVEC outils (Read/Edit/Write[/Bash]) sous garde-fou + RAG,
     dans un worktree donné. `model`/`max_turns` surchargent les défauts (MODEL/MAXTURNS).
@@ -342,15 +395,23 @@ def _run_claude_tools(
         cmd += ["--session-id", session_id]
     if effort:  # maîtrise du sur-raisonnement (Sonnet 5) sur les tâches simples
         cmd += ["--effort", effort]
-    proc = subprocess.run(
-        cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=TIMEOUT
-    )
-    try:
-        result = json.loads(proc.stdout or "{}")
-    except Exception:
-        result = {}
+    # Streaming (live_pid) : Popen + stream-json, actions poussées dans le flux LIVE.
+    # Sinon : mode bufferisé inchangé (juges/jobs/planning). Même dict `result` en sortie.
+    if live_pid:
+        result, returncode, stderr_text = _run_claude_stream(
+            cmd, worktree, env, live_pid, live_story
+        )
+    else:
+        proc = subprocess.run(
+            cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=TIMEOUT
+        )
+        returncode, stderr_text = proc.returncode, proc.stderr.strip()
+        try:
+            result = json.loads(proc.stdout or "{}")
+        except Exception:
+            result = {}
     truncated = False
-    if proc.returncode != 0:
+    if returncode != 0:
         # error_max_turns = succès PARTIEL : claude a travaillé mais atteint la limite
         # de tours (rc=1). On NE lève PAS et on CONSERVE le code produit — l'appelant le
         # committe et le juge évalue le diff partiel. Tout autre rc≠0 = vrai échec : on
@@ -363,8 +424,8 @@ def _run_claude_tools(
             detail = (
                 result.get("result")
                 or "; ".join(result.get("errors") or [])
-                or proc.stderr.strip()
-                or f"claude exit {proc.returncode}"
+                or stderr_text
+                or f"claude exit {returncode}"
             )
             raise RuntimeError(detail)
     audit = []
@@ -446,6 +507,69 @@ def run_job(job_id, prompt, repo, mode="file"):
 # ============================================================================
 PIPELINES: dict[str, dict] = {}
 PIPELINES_LOCK = threading.Lock()
+
+# Flux LIVE par pipeline (streaming des actions de l'IA, consommé en polling par la
+# webui). En mémoire, borné : la vue live n'a de sens que pendant un run.
+LIVE: dict[str, dict] = {}
+LIVE_LOCK = threading.Lock()
+LIVE_MAX = 800  # anneau : on garde les derniers événements
+
+
+def _live_push(pid, kind, text, story=None):
+    """Ajoute un événement live {seq, kind, text, story} au flux du pipeline."""
+    if not pid:
+        return
+    with LIVE_LOCK:
+        buf = LIVE.get(pid)
+        if buf is None:
+            buf = LIVE[pid] = {"seq": 0, "events": collections.deque(maxlen=LIVE_MAX)}
+        buf["seq"] += 1
+        buf["events"].append(
+            {
+                "seq": buf["seq"],
+                "kind": kind,
+                "text": (text or "")[:500],
+                "story": story,
+            }
+        )
+
+
+def _live_since(pid, since):
+    """Événements du flux d'un pipeline avec seq > since → (events, dernier_seq)."""
+    with LIVE_LOCK:
+        buf = LIVE.get(pid)
+        if not buf:
+            return [], since or 0
+        evs = [e for e in buf["events"] if e["seq"] > (since or 0)]
+        return evs, buf["seq"]
+
+
+_TOOL_ICON = {
+    "Read": "📖",
+    "Write": "✍️",
+    "Edit": "✏️",
+    "MultiEdit": "✏️",
+    "Bash": "⚙️",
+    "Grep": "🔎",
+    "Glob": "🗂️",
+}
+
+
+def _fmt_tool_event(block):
+    """Libellé compact d'un tool_use pour le flux live (nom + cible principale)."""
+    name = block.get("name") or "tool"
+    ti = block.get("input") or {}
+    icon = _TOOL_ICON.get(name, "•")
+    if name in ("Read", "Write", "Edit", "MultiEdit"):
+        return f"{icon} {name} {os.path.basename(ti.get('file_path') or '')}".strip()
+    if name == "Bash":
+        return f"{icon} Bash {(ti.get('command') or '')[:80]}".strip()
+    if name in ("Grep", "Glob"):
+        return f"{icon} {name} {ti.get('pattern') or ti.get('path') or ''}".strip()
+    if str(name).startswith("mcp__"):
+        return f"🧠 RAG {ti.get('query') or ''}".strip()
+    return f"{icon} {name}".strip()
+
 
 # Modèle des personas de planning (local via LiteLLM). Défaut local-gemma (charge sur
 # la machine actuelle) ; passer à local-qwen quand la VRAM le permet (meilleure qualité).
@@ -1246,6 +1370,8 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
                         resume=session_started,
                         # dev sur curseur rapide → effort maîtrisé ; escalade Opus = défaut.
                         effort=DEV_EFFORT if am != MODEL else None,
+                        live_pid=pid,  # streaming des actions dans le flux LIVE
+                        live_story=sid,
                     )
                     session_started = True  # session chaude établie → reprise ensuite
                     phase_session = res.get("session_id") or phase_session
@@ -1990,6 +2116,19 @@ def _build_board(name, repo, branch, worktree, story_usage, pipe, story_timing=N
     return {"name": name, "pipeline": pipe, "epics": epics_out, "phases": phases}
 
 
+def _current_pid(name):
+    """pipeline_id courant d'un projet (.ai-to-boost/pipeline.json). None si absent."""
+    try:
+        with open(_registry_path(), encoding="utf-8") as f:
+            p = ((json.load(f) or {}).get("projects") or {}).get(name) or {}
+        with open(
+            os.path.join(p["path"], ".ai-to-boost", "pipeline.json"), encoding="utf-8"
+        ) as f:
+            return (json.load(f) or {}).get("pipeline_id")
+    except Exception:
+        return None
+
+
 def _project_board(name):
     """Board d'un projet (epics/stories + statuts + détail) pour la web-app (ADR 0005).
     Source : sprint-status.yaml + epics.md du worktree/branche/working tree. None si projet
@@ -2310,6 +2449,23 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, board) if board else self._send(
                 404, {"error": "projet inconnu"}
             )
+            return
+        _parsed = urllib.parse.urlparse(self.path)
+        if _parsed.path.startswith("/projects/") and _parsed.path.endswith("/live"):
+            if not self._auth_ok():
+                self._send(401, {"error": "unauthorized"})
+                return
+            name = urllib.parse.unquote(
+                _parsed.path[len("/projects/") : -len("/live")].strip("/")
+            )
+            qs = urllib.parse.parse_qs(_parsed.query)
+            try:
+                since = int((qs.get("since") or ["0"])[0] or 0)
+            except ValueError:
+                since = 0
+            pid = _current_pid(name)
+            events, nxt = _live_since(pid, since) if pid else ([], since)
+            self._send(200, {"pid": pid, "events": events, "next": nxt})
             return
         if self.path.startswith("/projects/") and "/history" in self.path:
             if not self._auth_ok():
