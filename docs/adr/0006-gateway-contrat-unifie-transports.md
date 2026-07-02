@@ -8,7 +8,7 @@
 ## Contexte
 
 Objectif : un **hub agentic standardisé** où tous les frontends (webui, futur mobile,
-voix, etc.) communiquent de façon **homogène** avec la plateforme (n8n, LiteLLM, LM Studio,
+voix, etc.) communiquent de façon **homogène** avec la plateforme (n8n, LiteLLM, Ollama,
 Claude, BMAD). Tentation initiale : faire de **n8n le point d'entrée unique** par lequel
 **chaque** appel transite (frontend → n8n → LLM → n8n → frontend).
 

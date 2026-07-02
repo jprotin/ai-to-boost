@@ -17,7 +17,7 @@
 
 ```
 ENTRÉES                          n8n (CERVEAU)                       EXÉCUTANTS
-Telegram (txt|voix) ───┐  [Webhook /assistant-in]      /chat ───►  LiteLLM → LM Studio
+Telegram (txt|voix) ───┐  [Webhook /assistant-in]      /chat ───►  LiteLLM → Ollama
 murmure (mode cmd) ────┼► → normalise                  /claude ─►  bridge claude -p (texte)
 prompt/CLI/API ────────┘  → parse /commande            /code ───►  WORKER agentique (async)
                           → ROUTE                            │
@@ -50,7 +50,7 @@ WORKER (hôte, forfait) : git worktree isolé → claude -p +outils → branche 
 ### 6c — Entrée desktop (murmure) + notifications
 
 - murmure mode commande : `remote_url` = webhook n8n `/voice-in` (forme OpenAI) → n8n route → ack OpenAI tapé au curseur.
-- Mode chat libre de murmure : **reste en direct LM Studio** (inchangé).
+- Mode chat libre de murmure : **reste en direct Ollama** (inchangé).
 - Retour async des jobs desktop : v1 sur Telegram (sortie unifiée) ; option `notify-send` plus tard.
 
 ## Garde-fous (consolidés)
