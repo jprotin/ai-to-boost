@@ -54,7 +54,12 @@ STORY_MAXTURNS = int(os.environ.get("PIPELINE_STORY_MAXTURNS", "40"))
 # Gate de vérification : juge LLM (par story + acceptation finale) + tests si présents.
 # Désactivable (PIPELINE_VERIFY=false). Juge sur un modèle rapide.
 VERIFY = os.environ.get("PIPELINE_VERIFY", "true").lower() != "false"
-JUDGE_MODEL = os.environ.get("PIPELINE_JUDGE_MODEL", "sonnet")
+# Juge PAR STORY : verdict PASS/FAIL simple → Haiku (rapide) suffit et reste objectif.
+JUDGE_MODEL = os.environ.get("PIPELINE_JUDGE_MODEL", "haiku")
+# Acceptation FINALE (livrable ↔ besoin) : gardée forte pour ne pas perdre en qualité.
+ACCEPT_MODEL = os.environ.get("PIPELINE_ACCEPT_MODEL", "sonnet")
+# Effort du curseur dev (Sonnet 5 sur-réfléchit au défaut « high ») ; escalade Opus = défaut.
+DEV_EFFORT = os.environ.get("PIPELINE_DEV_EFFORT", "medium")
 WORKROOT = os.environ.get(
     "AGENT_WORKROOT", os.path.expanduser("~/.local/share/claude-agent/worktrees")
 )
@@ -269,7 +274,18 @@ def _guard_settings():
     )
 
 
-def _run_claude_tools(worktree, repo, prompt, mode, tag, model=None, max_turns=None):
+def _run_claude_tools(
+    worktree,
+    repo,
+    prompt,
+    mode,
+    tag,
+    model=None,
+    max_turns=None,
+    session_id=None,
+    resume=False,
+    effort=None,
+):
     """Cœur d'appel `claude -p` AVEC outils (Read/Edit/Write[/Bash]) sous garde-fou + RAG,
     dans un worktree donné. `model`/`max_turns` surchargent les défauts (MODEL/MAXTURNS).
     NE gère NI le worktree, NI BMAD, NI le commit, NI RUN_LOCK : l'appelant s'en charge
@@ -316,6 +332,15 @@ def _run_claude_tools(worktree, repo, prompt, mode, tag, model=None, max_turns=N
         "--append-system-prompt",
         APPEND_SYSTEM_PROMPT,
     ]
+    # Session CHAUDE : story 1 crée la session (--session-id), stories suivantes la
+    # REPRENNENT (--resume) → contexte/fichiers déjà lus conservés, pas de cold-start.
+    # Le guard --settings/--mcp-config est re-passé à chaque appel (sécurité maintenue).
+    if resume and session_id:
+        cmd += ["--resume", session_id]
+    elif session_id:
+        cmd += ["--session-id", session_id]
+    if effort:  # maîtrise du sur-raisonnement (Sonnet 5) sur les tâches simples
+        cmd += ["--effort", effort]
     proc = subprocess.run(
         cmd, cwd=worktree, env=env, capture_output=True, text=True, timeout=TIMEOUT
     )
@@ -359,6 +384,7 @@ def _run_claude_tools(worktree, repo, prompt, mode, tag, model=None, max_turns=N
         "tokens": tokens,
         "audit": audit,
         "truncated": truncated,  # True si max_turns atteint (travail partiel conservé)
+        "session_id": result.get("session_id"),  # pour reprendre la session (--resume)
     }
 
 
@@ -1173,6 +1199,13 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
     except Exception:
         epics_md = ""
 
+    # Session CHAUDE partagée par les stories de cette phase : story 1 la crée
+    # (--session-id), les suivantes la reprennent (--resume) → contexte/fichiers déjà
+    # lus conservés, pas de cold-start ni de ré-exploration. Repli sur une session
+    # neuve si une reprise échoue.
+    phase_session = str(uuid.uuid4())
+    session_started = False
+
     for s in todo:
         sid = s["id"]
         n, mnum = (sid.split("-") + ["", ""])[:2]
@@ -1197,9 +1230,19 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
                         f"pl-{pid}-{sid}",
                         model=am,
                         max_turns=STORY_MAXTURNS,
+                        session_id=phase_session,
+                        resume=session_started,
+                        # dev sur curseur rapide → effort maîtrisé ; escalade Opus = défaut.
+                        effort=DEV_EFFORT if am != MODEL else None,
                     )
+                    session_started = True  # session chaude établie → reprise ensuite
+                    phase_session = res.get("session_id") or phase_session
                 except Exception as exc:  # échec dur -> tentative suivante (Opus)
                     reason = f"erreur d'exécution sur {am}: {exc}"
+                    if (
+                        session_started
+                    ):  # reprise perdue → session neuve au prochain essai
+                        phase_session, session_started = str(uuid.uuid4()), False
                     _eject_bmad(worktree)
                     _git(worktree, "reset", "--hard", base_rev, check=False)
                     _git(worktree, "clean", "-fd", check=False)
@@ -1272,7 +1315,7 @@ def _run_implementation_phase(worktree, repo, brief, phase, pid, feedback=""):
     acceptance = None
     if VERIFY and not feedback:
         tests = _run_tests(worktree)
-        acc_ok, acc_reason = _judge_acceptance(worktree, brief, JUDGE_MODEL)
+        acc_ok, acc_reason = _judge_acceptance(worktree, brief, ACCEPT_MODEL)
         if tests and tests.startswith("fail"):
             acc_ok = False
             acc_reason = (acc_reason + " | " if acc_reason else "") + "tests en échec"
