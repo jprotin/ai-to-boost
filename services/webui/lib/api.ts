@@ -19,6 +19,7 @@ export type Story = {
   status: string;
   detail?: string;
   tokens?: Tokens | null;
+  duration_s?: number | null;
 };
 export type Epic = {
   n: number;
@@ -26,7 +27,9 @@ export type Epic = {
   status: string;
   stories: Story[];
   tokens?: Tokens | null;
+  duration_s?: number | null;
 };
+export type PhaseTiming = { key: string; seconds: number };
 export type Phase = { key: string; persona: string; model: string };
 export type Artifact = { key: string; title: string };
 export type Board = {
@@ -41,6 +44,9 @@ export type Board = {
     artifacts?: Artifact[];
     tokens?: Tokens | null;
     acceptance?: { ok: boolean; reason?: string; tests?: string } | null;
+    duration_s?: number | null; // durée mur (created→finished/maintenant)
+    active_s?: number | null; // temps IA actif (somme des phases)
+    phase_timings?: PhaseTiming[];
   };
   epics: Epic[];
   phases?: Phase[];
@@ -77,6 +83,7 @@ export type Run = {
   finished?: string;
   branch?: string;
   tokens?: Tokens | null;
+  duration_s?: number | null;
 };
 
 // Contenu Markdown d'un artefact du run courant ("" si absent/erreur).

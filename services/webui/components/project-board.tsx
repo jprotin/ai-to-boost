@@ -5,6 +5,7 @@ import { Markdown } from "@/components/markdown";
 import { PersonaTag } from "@/components/persona-tag";
 import { StatusBadge } from "@/components/status-badge";
 import { TokenStat } from "@/components/token-stat";
+import { DurationStat } from "@/components/duration-stat";
 import {
   Card,
   CardContent,
@@ -36,6 +37,7 @@ export function ProjectBoard({ board }: { board: Board }) {
                   Epic {e.n} — {e.title}
                 </CardTitle>
                 <span className="flex shrink-0 items-center gap-2">
+                  <DurationStat seconds={e.duration_s} />
                   <TokenStat tokens={e.tokens} />
                   <StatusBadge status={e.status} />
                 </span>
@@ -57,6 +59,7 @@ export function ProjectBoard({ board }: { board: Board }) {
                 >
                   <span className="min-w-0 truncate">{s.title}</span>
                   <span className="flex shrink-0 items-center gap-2">
+                    <DurationStat seconds={s.duration_s} />
                     <TokenStat tokens={s.tokens} />
                     {s.status !== "backlog" && implPhase ? (
                       <PersonaTag
@@ -81,6 +84,7 @@ export function ProjectBoard({ board }: { board: Board }) {
             <DialogDescription className="flex items-center gap-2">
               <StatusBadge status={story?.status} />
               <code className="text-xs">{story?.id}</code>
+              <DurationStat seconds={story?.duration_s} />
               <TokenStat tokens={story?.tokens} />
             </DialogDescription>
           </DialogHeader>

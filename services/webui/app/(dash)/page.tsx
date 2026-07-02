@@ -8,6 +8,7 @@ import {
 } from "@/lib/api";
 import { StatusBadge } from "@/components/status-badge";
 import { TokenStat } from "@/components/token-stat";
+import { DurationStat } from "@/components/duration-stat";
 import {
   Card,
   CardContent,
@@ -149,6 +150,7 @@ export default async function DashboardPage() {
               >
                 <span className="min-w-0 truncate font-medium">{p.name}</span>
                 <span className="flex shrink-0 items-center gap-2">
+                  <DurationStat seconds={boards[i]?.pipeline?.duration_s} />
                   <TokenStat tokens={boards[i]?.pipeline?.tokens} />
                   <StatusBadge
                     status={

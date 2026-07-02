@@ -12,6 +12,7 @@ import { PipelineProgress } from "@/components/pipeline-progress";
 import { ProjectBoard } from "@/components/project-board";
 import { StatusBadge } from "@/components/status-badge";
 import { TokenStat } from "@/components/token-stat";
+import { DurationStat } from "@/components/duration-stat";
 import { Card, CardContent } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import type { Board } from "@/lib/api";
@@ -65,6 +66,7 @@ export function ProjectView({
         status={board.pipeline?.status}
         phase={board.pipeline?.phase}
         phases={board.phases}
+        timings={board.pipeline?.phase_timings}
       />
 
       {board.pipeline?.status === "awaiting_approval" ? (
@@ -112,6 +114,15 @@ export function ProjectView({
             <code className="text-xs text-muted-foreground">
               {board.pipeline.branch}
             </code>
+          ) : null}
+          {board.pipeline.duration_s ? (
+            <span className="flex items-center gap-1 text-muted-foreground">
+              <span className="text-xs">Durée</span>
+              <DurationStat
+                seconds={board.pipeline.duration_s}
+                title={`Durée totale (attentes incluses)${board.pipeline.active_s ? ` — temps IA actif ${board.pipeline.active_s}s` : ""}`}
+              />
+            </span>
           ) : null}
           {board.pipeline.tokens ? (
             <span className="flex items-center gap-1 text-muted-foreground">
