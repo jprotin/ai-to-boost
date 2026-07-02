@@ -70,7 +70,7 @@ npm run dev   # http://localhost:3000
 
 - **Modèles dynamiques** : `GET /api/models` sonde le bridge (`/health`) et LiteLLM
   (`/health`) → ne propose que les modèles **réellement disponibles** (ex. `local-qwen`
-  masqué s'il n'est pas chargé dans LM Studio).
+  masqué s'il n'est pas chargé dans Ollama).
 - **Persistance** : conversations + messages en **SQLite** (Drizzle), fichier
   `WEBUI_DB_PATH` (défaut `/app/data/webui.db`, volume docker `webui-data`). Tables créées
   de façon idempotente au démarrage (pas de migration à lancer). Mémoire = l'historique est
