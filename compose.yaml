@@ -225,6 +225,8 @@ services:
       EMBEDDING_MODEL: nomic-ai/nomic-embed-text-v1.5
       RAG_PORT: "8100"
       FASTEMBED_CACHE_PATH: /cache
+      # Écriture (POST/DELETE /documents, fiches antares_ai) : vide = désactivée
+      RAG_WRITE_TOKEN: ${RAG_WRITE_TOKEN:-}
     volumes:
       - rag-cache:/cache
 

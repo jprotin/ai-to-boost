@@ -69,6 +69,7 @@ depuis `.env.example`, **gitignoré**) surcharge. Les secrets de la webui vivent
 | `RAG_COLLECTION`  | `knowledge`                                                   | Collection commune                                                          |
 | `EMBEDDING_MODEL` | `nomic-ai/nomic-embed-text-v1.5`                              | Embeddings (FastEmbed) — **doit** être identique entre ingestion et requête |
 | `RAG_PORT`        | `8100`                                                        | Port du service `rag`                                                       |
+| `RAG_WRITE_TOKEN` | _(vide)_                                                      | Jeton Bearer d'écriture du service `rag` (`/documents`) ; vide = désactivée |
 
 ## n8n
 

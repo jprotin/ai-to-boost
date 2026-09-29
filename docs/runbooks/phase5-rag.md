@@ -76,12 +76,30 @@ Le fichier **`.mcp.json`** (racine du repo) déclare le serveur MCP `qdrant`.
 - **MCP absent dans Claude Code** : `.mcp.json` non chargé (redémarrer) ou serveur
   non approuvé.
 
+## Indexation par API (fiches antares_ai)
+
+Le service `rag` accepte aussi l'écriture, pour les clients qui produisent leurs propres
+documents (antares_ai : fiches de connaissance relues avant indexation) :
+
+- `POST /documents` `{collection, doc_id, text, metadata}` : découpe et indexe (même
+  embedding que `ingest.py`), en **remplaçant** les chunks existants du même `doc_id` ;
+- `DELETE /documents` `{collection, doc_id}` : retire le document de l'index ;
+- `POST /query` exclut les documents marqués `status: obsolete` ou dont
+  `valid_until_ts` (horodatage Unix) est dépassé. Les documents d'`ingest.py` n'ont pas
+  ces champs et ne sont pas concernés.
+
+Écriture protégée : `RAG_WRITE_TOKEN` (`.env`) doit être défini, et l'appel porter
+`Authorization: Bearer <jeton>` ; sinon 403. Collections acceptées : `knowledge` et
+`proj-<slug>`. Tests : `services/rag/tests/test_server.py` (unitaires + intégration
+Qdrant sur une collection temporaire).
+
 ## Notes / évolutions
 
 - **Sans clé API** en v1 (local-only). Pour durcir : activer
   `QDRANT__SERVICE__API_KEY` et fournir la clé au client/MCP.
 - **Suppressions** : un fichier retiré de `knowledge/` reste dans Qdrant. Pour repartir
   propre : supprimer la collection (`DELETE /collections/knowledge`) puis ré-indexer.
+  Les documents écrits par API se retirent avec `DELETE /documents`.
 - **PDF/docx** : convertir en texte avant dépôt (v1 = `.md`/`.txt`).
 - **RAG dans n8n/Telegram** : l'assistant Telegram pourra interroger Qdrant (nomic via
   LiteLLM `local-embed`, 768d compatible) — étape ultérieure.
